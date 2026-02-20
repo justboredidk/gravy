@@ -362,6 +362,7 @@ class MainWindow(QMainWindow):
             pass
         else:
             return False, "No Server Exists"
+    
     def add_contact(self):
         success, error = self.app.add_contact(self.dashboard_page_obj.ka_username.text(), self.dashboard_page_obj.ka_public_key.text())
         if success:
