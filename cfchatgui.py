@@ -16,6 +16,14 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
 import json
 
+#TO_DO
+#Finish dashboard and accoutn managed features (proxy, histories, etc)
+#Make chat functional
+#Add multiclient, multiserver
+#Intgrate proxy
+#Add Chat history
+#Refactor client and server to allow for transmission of files, images, update encryption protocol to be more flexible and tolerant of delays.
+
 class ClientSession():
     
     def __init__(self):
