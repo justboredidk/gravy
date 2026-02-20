@@ -68,7 +68,7 @@ class Application():
             return False, "incorrect_password"
     
     def logout(self):
-        self.account_data = None
+        self.account = None
         self.user_data_key = None
         self.private_key = None
         self.public_key = None
@@ -92,13 +92,27 @@ class Application():
 
         account.data = {
             "priv_bytes": private_key.private_bytes(encoding=serialization.Encoding.Raw, format=serialization.PrivateFormat.Raw, encryption_algorithm=serialization.NoEncryption()).hex(),
-            "pub_bytes": public_key.public_bytes(encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw).hex()
+            "pub_bytes": public_key.public_bytes(encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw).hex(),
+            "known_ids": {},
         }
 
         account.encrypt(key)
         success = account.save(path)
         return success, "File Could Not Save"
-        
+    
+    def add_contact(self, name, id):
+        self.account.data["known_ids"][name] = id
+        self.account.encrypt(self.user_data_key)
+        return self.account.save(), "File Couldn't Save"   
+    
+    def remove_contact(self, name):
+        try:
+            self.account.data["known_ids"].pop(name)
+        except:
+            return False, f"Name {name} not found"
+        self.account.encrypt(self.user_data_key)
+        return self.account.save(), "File Couldn't Save"
+
 
 class MainWindow(QMainWindow):
 
@@ -214,9 +228,9 @@ class MainWindow(QMainWindow):
         self.dashboard_page_obj.ka_text_input = QHBoxLayout()
 
         self.dashboard_page_obj.ka_username = QLineEdit(placeholderText="Username")
-        self.dashboard_page_obj.ka_private_key = QLineEdit(placeholderText="Private Key")
+        self.dashboard_page_obj.ka_public_key = QLineEdit(placeholderText="Public Key")
         self.dashboard_page_obj.ka_text_input.addWidget(self.dashboard_page_obj.ka_username)
-        self.dashboard_page_obj.ka_text_input.addWidget(self.dashboard_page_obj.ka_private_key)
+        self.dashboard_page_obj.ka_text_input.addWidget(self.dashboard_page_obj.ka_public_key)
 
         self.dashboard_page_obj.ka_add_btn = QPushButton("Add Contact")
         self.dashboard_page_obj.ka_remove_btn = QPushButton("Remove Contact")
@@ -296,6 +310,7 @@ class MainWindow(QMainWindow):
                                                                                 self.dashboard_page_obj.account_information_list)
             self.dashboard_page_obj.public_key_list_item = QListWidgetItem(f"User Public Key: {self.app.public_key.public_bytes(encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw).hex()}", self.dashboard_page_obj.account_information_list)
             self.dashboard_page_obj.base_dir_list_item = QListWidgetItem(f"Base Directory: {self.app.base_dir}", self.dashboard_page_obj.account_information_list)
+            self.reload_contacts()
 
             self.pages.setCurrentIndex(self.DASHBOARD_PAGE)
             print("Login Succesful!")
@@ -340,12 +355,31 @@ class MainWindow(QMainWindow):
         else:
             return False, "No Server Exists"
     def add_contact(self):
-        pass
+        success, error = self.app.add_contact(self.dashboard_page_obj.ka_username.text(), self.dashboard_page_obj.ka_public_key.text())
+        if success:
+            self.reload_contacts()
+            self.dashboard_page_obj.ka_username.clear()
+            self.dashboard_page_obj.ka_public_key.clear()
+        else:
+            print(f"ID could not be added: {error}")
     
     def remove_contact(self):
-        pass
+        success, error = self.app.remove_contact(self.dashboard_page_obj.ka_username.text())
+        if success:
+            self.reload_contacts()
+            self.dashboard_page_obj.ka_username.clear()
+            self.dashboard_page_obj.ka_public_key.clear()
+        else:
+            print(f"ID could not be removed: {error}")
+    
+    def reload_contacts(self):
+        self.dashboard_page_obj.ka_list.setUpdatesEnabled(False)
+        self.dashboard_page_obj.ka_list.clear()
+        for key in self.app.account.data["known_ids"]:
+            self.dashboard_page_obj.ka_list.addItem(f"{key}: {self.app.account.data["known_ids"][key]}")
+        self.dashboard_page_obj.ka_list.setUpdatesEnabled(True)
 
-    def nothing():
+    def nothing(self):
         pass
 
 
