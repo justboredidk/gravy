@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import asyncio
 import sys
 import os
-import jblob
+from jblob import JBlob
 import cfchatutils as cfu
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 from cryptography.exceptions import InvalidSignature
@@ -29,7 +29,7 @@ class ServerSession():
 class Application():
 
     def __init__(self):
-        self.account_data = None
+        self.account = None
         self.user_data_key = None
         self.private_key = None
         self.public_key = None
@@ -38,26 +38,25 @@ class Application():
     
     def login(self, username, password):
         path = os.path.join(self.base_dir, f"{username}.act")
-        print(path)
-        try:
-            with open(path, 'r') as f:
-                self.account_data = json.load(f)
-        except:
+        self.account = JBlob(path)
+
+        if self.account.load():
+            pass
+        else:
             return False, "account_not_found"
         
-        if cfu.check_password(password, self.account_data):
-            self.username = self.account_data['username']
-            salt = bytes.fromhex(self.account_data['salt'])
+        print(cfu.check_password(password, self.account))
+        
+        if cfu.check_password(password, self.account):
+            self.username = self.account.opt_data['username']
+            salt = bytes.fromhex(self.account.opt_data['salt'])
             self.user_data_key = cfu.derive_key(password, salt)
-            nonce = bytes.fromhex(self.account_data['blob'][0])
-            ciphertext = bytes.fromhex(self.account_data['blob'][1])
 
-            decrypted_blob_bytes = cfu.decrypt(self.user_data_key, nonce, ciphertext)
-            decrypted_blob = json.loads(decrypted_blob_bytes.decode('utf-8'))
+            self.account.decrypt(self.user_data_key)
 
             #print(f"Priv: {decrypted_blob['priv_bytes']}, Pub: {decrypted_blob['pub_bytes']}")
-            self.private_key = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(decrypted_blob['priv_bytes']))
-            self.public_key = Ed25519PublicKey.from_public_bytes(bytes.fromhex(decrypted_blob['pub_bytes']))
+            self.private_key = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(self.account.data['priv_bytes']))
+            self.public_key = Ed25519PublicKey.from_public_bytes(bytes.fromhex(self.account.data['pub_bytes']))
 
             test_sig = self.private_key.sign(b'test')
             try:
@@ -76,44 +75,30 @@ class Application():
         self.username = None
     
     def make_account(self, username, password):
-        check = os.urandom(32)
+        path = os.path.join(self.base_dir, f"{username}.act")
         salt = os.urandom(16)
-
         key = cfu.derive_key(password, salt)
-
-        nonce, encrypted_check = cfu.encrypt(key, check)
         #decrypted_check = decrypt(key, encrypted_check["nonce"], encrypted_check["ciphertext"])
+        #account.data is encrypted, account.opt_data is not encrypted, so it is used to store the salt and othername
 
-        account = {
-            'username': username,
-            'salt': salt.hex(),
-            'ec_nonce': nonce.hex(),
-            'ec_ciphertext': encrypted_check.hex(),
-            'blob': None
+        account = JBlob()
+        account.opt_data = {
+            "salt": salt.hex(),
+            "username": username,
         }
 
         private_key = Ed25519PrivateKey.generate()
         public_key = private_key.public_key()
 
-        blob = {
+        account.data = {
             "priv_bytes": private_key.private_bytes(encoding=serialization.Encoding.Raw, format=serialization.PrivateFormat.Raw, encryption_algorithm=serialization.NoEncryption()).hex(),
             "pub_bytes": public_key.public_bytes(encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw).hex()
         }
 
-        blob_bytes = json.dumps(blob).encode('utf-8')
-        blob_nonce, blob_data = cfu.encrypt(key, blob_bytes)
-
-        account['blob'] = (blob_nonce.hex(), blob_data.hex())
-
-        try:
-            print("Saving Account Information")
-            path = os.path.join(self.base_dir, f"{username}.act")
-            print(path)
-            with open(path, 'w') as f:
-                json.dump(account, f)
-            return True, "account_created"
-        except:
-            return False, "file_write_failed"
+        account.encrypt(key)
+        success = account.save(path)
+        return success, "File Could Not Save"
+        
 
 class MainWindow(QMainWindow):
 

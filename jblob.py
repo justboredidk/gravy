@@ -3,19 +3,30 @@ from cryptography.exceptions import InvalidTag
 import os
 import json
 
-class jblob:
+class JBlob:
     def __init__(self, filename=None):
         self.filename = filename
         self.data = {}
+        self.opt_data = {}
         self.nonce = None
         self.encrypted = None
 
     def decrypt(self, key: bytes):
         aead = ChaCha20Poly1305(key)
-        decrypted_blob = aead.decrypt(self.nonce, self.encrypted, associated_data=None)
+        try:
+            decrypted_blob = aead.decrypt(self.nonce, self.encrypted, associated_data=None)
+        except InvalidTag:
+            raise InvalidTag
         self.data = json.loads(decrypted_blob.decode('utf-8'))
 
         return self.data
+    
+    def try_decrypt(self, key: bytes):
+        aead = ChaCha20Poly1305(key)
+        try:
+            aead.decrypt(self.nonce, self.encrypted, associated_data=None)
+        except InvalidTag:
+            raise InvalidTag
     
     def encrypt(self, key: bytes):
         aead = ChaCha20Poly1305(key)
@@ -35,13 +46,17 @@ class jblob:
         else:
             self.filename = filename
         
-        with open(filename, 'r') as f:
-            contents = json.load(f)
+        try:
+            with open(filename, 'r') as f:
+                contents = json.load(f)
+        except:
+            return False
         
         self.encrypted = bytes.fromhex(contents["encrypted"])
         self.nonce = bytes.fromhex(contents["nonce"])
+        self.opt_data = contents["opt_data"]
 
-        return
+        return True
     
     def save(self, filename=None):
         if self.filename != None:
@@ -49,16 +64,21 @@ class jblob:
         else:
             self.filename = filename
 
-        contents = {"nonce": self.nonce.hex(), "encrypted": self.encrypted.hex()}
+        contents = {"opt_data": self.opt_data, "nonce": self.nonce.hex(), "encrypted": self.encrypted.hex()}
         
-        with open(filename, 'w') as f:
-            json.dump(contents, f)
+        try:
+            with open(filename, 'w') as f:
+                json.dump(contents, f)
+        except:
+            return False
+        
+        return True
 
 if __name__ == "__main__":
     key = os.urandom(32)
     data = {"name": "john", "age": 21}
 
-    gov_database = jblob()
+    gov_database = JBlob()
     gov_database.data = data
     gov_database.encrypt(key)
     gov_database.save("database.dat")

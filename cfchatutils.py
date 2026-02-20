@@ -10,6 +10,9 @@ from cryptography.exceptions import InvalidTag, InvalidSignature
 from cryptography.hazmat.primitives import serialization
 from getpass import getpass
 from prompt_toolkit import print_formatted_text
+from jblob import JBlob
+
+#FOR GUI VERSION ONLY, NOT COMPATIBLE WITH OOB OR ONE FILE VERSIONS!
 
 def empty_queue(q: asyncio.Queue):
     #Empties Queue
@@ -92,15 +95,15 @@ def login(account):
 
     return key, private_key, public_key, account
 
-def check_password(password: str, account):
-    salt = bytes.fromhex(account['salt'])
+def check_password(password: str, account: JBlob):
+    salt = bytes.fromhex(account.opt_data['salt'])
     key = derive_key(password, salt)
 
     try:
-        decrypt(key, bytes.fromhex(account['ec_nonce']), bytes.fromhex(account['ec_ciphertext']))
-        return True
+        account.try_decrypt(key)
     except InvalidTag:
         return False
+    return True
 
 def make_account(username):
     while True:
