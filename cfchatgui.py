@@ -17,7 +17,7 @@ from cryptography.hazmat.primitives import serialization
 import json
 
 #TO_DO
-#Finish dashboard and accoutn managed features (proxy, histories, etc)
+#Finish dashboard and account managed features (proxy, histories, etc)
 #Make chat functional
 #Add multiclient, multiserver
 #Intgrate proxy
