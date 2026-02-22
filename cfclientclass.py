@@ -97,7 +97,7 @@ class Client:
                 break
             yield usr_msg
     
-    async def client_encryption(self, server_id: str, ed_private_key, account: dict):
+    async def client_encryption(self, server_id: str, ed_private_key):
         try:
             #send server the public key
             my_private_key = X25519PrivateKey.generate()
@@ -242,7 +242,7 @@ class Client:
             full_traceback = traceback.format_exc()
             await self.log_event(f"Unable to connect to server on, exception {full_traceback}")
 
-    async def start_client(self, url, server_id, ed_private_key, account):
+    async def start_client(self, url, server_id, ed_private_key):
         cfu.empty_queue(self.inbound)
         cfu.empty_queue(self.inbound_usr)
         cfu.empty_queue(self.outbound)
@@ -256,7 +256,7 @@ class Client:
             tasks = [
                 asyncio.create_task(self.client_reciever(websocket)),
                 asyncio.create_task(self.client_router(websocket)),
-                asyncio.create_task(self.client_encryption(server_id, ed_private_key, account)),
+                asyncio.create_task(self.client_encryption(server_id, ed_private_key)),
             ]
 
             try:

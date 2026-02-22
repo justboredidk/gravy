@@ -3,7 +3,9 @@ from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QPushButton, QV
 from PySide6.QtGui import QColor, QPalette, QIcon
 from PySide6 import QtSvg
 
-import PySide6.QtAsyncio as QtAsyncio
+#import PySide6.QtAsyncio as QtAsyncio
+import asyncio
+from qasync import QEventLoop
 
 from types import SimpleNamespace
 import asyncio
@@ -11,8 +13,8 @@ import sys
 import os
 from jblob import JBlob
 import cfchatutils as cfu
-from cfserverclass import Server
-from cfclientclass import Client
+import cfserverclass
+import cfclientclass
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
@@ -25,15 +27,6 @@ import json
 #Intgrate proxy
 #Add Chat history
 #Refactor client and server to allow for transmission of files, images, update encryption protocol to be more flexible and tolerant of delays.
-
-class ClientSession():
-    
-    def __init__(self):
-        self.server_name = ""
-        self.client = Client()
-    
-    async def start_client(self, url, server_id, ed_private_key, account):
-        pass
 
 class ServerSession():
     
@@ -127,6 +120,63 @@ class Application():
         self.account.encrypt(self.user_data_key)
         return self.account.save(), "File Couldn't Save"
 
+class ClientSession(QWidget):
+    
+    def __init__(self, app: Application, name="SERVER", parent=None):
+        super().__init__(parent)
+        self.app = app
+        self.server_name = name
+
+        self.setMaximumWidth(600)
+
+        self.main_layout = QVBoxLayout()
+        self.setLayout(self.main_layout)
+        self.input_layout = QHBoxLayout()
+
+        self.chat_display = QTextBrowser()
+        self.chat_display.setReadOnly(True)
+
+        self.input_box = QLineEdit(placeholderText="Message")
+        self.input_box.returnPressed.connect(
+            lambda: asyncio.create_task(self.send_message())
+        )
+        send_icon = QIcon(os.path.join(self.app.base_dir, "resources", "icons", "send.svg"))
+        self.send_button = QPushButton("")
+        self.send_button.setIcon(send_icon)
+        self.send_button.setIconSize(QSize(32, 32))
+        self.send_button.clicked.connect(
+            lambda: asyncio.create_task(self.send_message())
+        )
+
+        self.input_layout.addWidget(self.input_box)
+        self.input_layout.addWidget(self.send_button)
+
+        self.main_layout.addWidget(self.chat_display)
+        self.main_layout.addLayout(self.input_layout)
+    
+    async def start_client(self, url, server_id):
+        self.client = cfclientclass.Client()
+
+        client_task = asyncio.create_task(self.client.start_client(url, server_id, self.app.private_key))
+        display_task = asyncio.create_task(self.client_display())
+
+        await self.client.stop_event.wait()
+
+        display_task.cancel()
+        await asyncio.gather(display_task, client_task, return_exceptions=True)
+
+    async def client_display(self):
+        async for msg in self.client.recv_stream():
+            if msg == self.client.STOP:
+                break
+
+            self.chat_display.append(f"[{self.server_name}] {msg}")
+
+    async def send_message(self):
+        text = self.input_box.text()
+        self.input_box.clear()
+        self.chat_display.append(f"[{self.app.username}] {text}")
+        await self.client.send(text)
 
 class MainWindow(QMainWindow):
 
@@ -166,8 +216,16 @@ class MainWindow(QMainWindow):
         self.connect_server_btn.setIconSize(QSize(24, 24))
         self.connect_server_btn.clicked.connect(lambda: self.switch_page(self.CONNECT_SERVER_PAGE) if self.app.username else None)
 
+        self.sidebar_list = QListWidget()
+        self.sidebar_list.itemClicked.connect(
+            lambda item: self.pages.setCurrentWidget(
+                item.data(Qt.ItemDataRole.UserRole)
+            )
+        )
+
         sidebar_layout.addWidget(self.dashboard_btn)
         sidebar_layout.addWidget(self.connect_server_btn)
+        sidebar_layout.addWidget(self.sidebar_list)
         sidebar_layout.addStretch()
 
         layout.addWidget(sidebar, stretch=1)
@@ -270,7 +328,8 @@ class MainWindow(QMainWindow):
         self.dashboard_page_obj.ka_list_layout.addLayout(self.dashboard_page_obj.ka_buttons)
 
         #Account Info
-        self.dashboard_page_obj.account_information_list = QListWidget()
+        self.dashboard_page_obj.account_information_list = QTextBrowser()
+        self.dashboard_page_obj.account_information_list.setReadOnly(True)
 
         self.dashboard_page_obj.dash_lists_layout.addWidget(self.dashboard_page_obj.account_information_list)
         self.dashboard_page_obj.dash_lists_layout.addLayout(self.dashboard_page_obj.ka_list_layout)
@@ -327,7 +386,8 @@ class MainWindow(QMainWindow):
         self.connect_server_page_obj.ui_layout = QVBoxLayout(self.connect_server_page_obj.ui)
         
         self.connect_server_page_obj.url_box = QLineEdit(placeholderText="ws://localhost:8080")
-        self.connect_server_page_obj.id_box = QLineEdit(placeholderText="Server Private Key")
+        self.connect_server_page_obj.name_box = QLineEdit(placeholderText="Server Name")
+        self.connect_server_page_obj.id_box = QLineEdit(placeholderText="Server Public Key")
         self.connect_server_page_obj.id_list = QListWidget()
         #Makes it so when you click a user in the list it automatically sets the expected id to their key
         self.connect_server_page_obj.id_list.itemClicked.connect(
@@ -337,6 +397,7 @@ class MainWindow(QMainWindow):
         self.connect_server_page_obj.connect_btn.clicked.connect(self.connect_to_server)
 
         self.connect_server_page_obj.ui_layout.addWidget(self.connect_server_page_obj.url_box)
+        self.connect_server_page_obj.ui_layout.addWidget(self.connect_server_page_obj.name_box)
         self.connect_server_page_obj.ui_layout.addWidget(self.connect_server_page_obj.id_box)
         self.connect_server_page_obj.ui_layout.addWidget(self.connect_server_page_obj.id_list)
         self.connect_server_page_obj.ui_layout.addWidget(self.connect_server_page_obj.connect_btn)
@@ -440,14 +501,13 @@ class MainWindow(QMainWindow):
             self.pages.setCurrentIndex(index)
         if index == self.DASHBOARD_PAGE:
             self.dashboard_page_obj.account_information_list.clear()
-            self.dashboard_page_obj.username_list_item = QListWidgetItem(f"Username: {self.app.username}", self.dashboard_page_obj.account_information_list)
-            self.dashboard_page_obj.user_data_key_list_item = QListWidgetItem(f"User Data Key: {self.app.user_data_key.hex()}", self.dashboard_page_obj.account_information_list)
-            self.dashboard_page_obj.private_key_list_item = QListWidgetItem(f"User Private Key: {self.app.private_key.private_bytes(encoding=serialization.Encoding.Raw, 
+            self.dashboard_page_obj.account_information_list.append(f"Username: {self.app.username}")
+            self.dashboard_page_obj.account_information_list.append(f"User Data Key: {self.app.user_data_key.hex()}")
+            self.dashboard_page_obj.account_information_list.append(f"User Private Key: {self.app.private_key.private_bytes(encoding=serialization.Encoding.Raw, 
                                                                                                                                     format=serialization.PrivateFormat.Raw, 
-                                                                                                                                    encryption_algorithm=serialization.NoEncryption()).hex()}", 
-                                                                                self.dashboard_page_obj.account_information_list)
-            self.dashboard_page_obj.public_key_list_item = QListWidgetItem(f"User Public Key: {self.app.public_key.public_bytes(encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw).hex()}", self.dashboard_page_obj.account_information_list)
-            self.dashboard_page_obj.base_dir_list_item = QListWidgetItem(f"Base Directory: {self.app.base_dir}", self.dashboard_page_obj.account_information_list)
+                                                                                                                                    encryption_algorithm=serialization.NoEncryption()).hex()}")
+            self.dashboard_page_obj.account_information_list.append(f"User Public Key: {self.app.public_key.public_bytes(encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw).hex()}")
+            self.dashboard_page_obj.account_information_list.append(f"Base Directory: {self.app.base_dir}")
             self.dashboard_page_obj.ka_username.clear()
             self.dashboard_page_obj.ka_public_key.clear()
             self.reload_contacts(self.dashboard_page_obj.ka_list)
@@ -459,7 +519,21 @@ class MainWindow(QMainWindow):
             self.pages.setCurrentIndex(index)
 
     def connect_to_server(self):
-        pass
+        client_session = ClientSession(self.app, self.connect_server_page_obj.name_box.text())
+        self.pages.addWidget(client_session)
+
+        item = QListWidgetItem(self.connect_server_page_obj.name_box.text())
+        item.setData(Qt.ItemDataRole.UserRole, client_session)
+
+        self.sidebar_list.addItem(item)
+
+        asyncio.create_task(client_session.start_client(
+            self.connect_server_page_obj.url_box.text(),
+            self.connect_server_page_obj.id_box.text()
+        ))
+
+        self.pages.setCurrentWidget(client_session)
+        
 
     def nothing(self):
         pass
@@ -474,4 +548,8 @@ if __name__ == "__main__":
     main_window.resize(600, 400)
     main_window.show()
 
-    QtAsyncio.run(handle_sigint=True)
+    loop = QEventLoop(app)
+    asyncio.set_event_loop(loop)
+
+    with loop:
+        loop.run_forever()
