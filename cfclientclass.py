@@ -137,7 +137,7 @@ class Client:
                         ) +
                         random
                     )
-                    await self.log_event(f"challenge i made (server+client+random) {challenge.hex()}")               
+                    #await self.log_event(f"challenge i made (server+client+random) {challenge.hex()}")               
                     signature = ed_private_key.sign(challenge)
 
                     await self.outbound.put({
@@ -146,7 +146,7 @@ class Client:
                         'signature': signature.hex()
                         })
                     
-                    await self.log_event(f"Signature i made {signature.hex()}")
+                    #await self.log_event(f"Signature i made {signature.hex()}")
                     
                     #Wait until message with signature is recieved
                     while 1:
@@ -170,8 +170,8 @@ class Client:
                         random
                     )
 
-                    await self.log_event(f"challenge recieved (server+client+random) {challenge.hex()}")
-                    await self.log_event(f"Signature i recieved {signature.hex()}")
+                    #await self.log_event(f"challenge recieved (server+client+random) {challenge.hex()}")
+                    #await self.log_event(f"Signature i recieved {signature.hex()}")
 
                     unpacked_server_id = Ed25519PublicKey.from_public_bytes(bytes.fromhex(server_id))
                     

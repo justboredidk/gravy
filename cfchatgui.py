@@ -1,4 +1,4 @@
-from PySide6.QtCore import Qt, QSize
+from PySide6.QtCore import Qt, QSize, Signal
 from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QPushButton, QVBoxLayout, QHBoxLayout, QWidget, QLineEdit, QTextBrowser, QStyle, QSizePolicy, QStackedWidget, QListWidget, QListWidgetItem
 from PySide6.QtGui import QColor, QPalette, QIcon
 from PySide6 import QtSvg
@@ -7,6 +7,7 @@ from PySide6 import QtSvg
 import asyncio
 from qasync import QEventLoop
 
+import signal
 from types import SimpleNamespace
 import asyncio
 import sys
@@ -52,7 +53,7 @@ class Application():
         else:
             return False, "account_not_found"
         
-        print(cfu.check_password(password, self.account))
+        #print(cfu.check_password(password, self.account))
         
         if cfu.check_password(password, self.account):
             self.username = self.account.opt_data['username']
@@ -121,9 +122,11 @@ class Application():
         return self.account.save(), "File Couldn't Save"
 
 class ClientSession(QWidget):
+    finished = Signal(object)
     
     def __init__(self, app: Application, name="SERVER", parent=None):
         super().__init__(parent)
+        self.client = None
         self.app = app
         self.server_name = name
 
@@ -143,7 +146,7 @@ class ClientSession(QWidget):
         send_icon = QIcon(os.path.join(self.app.base_dir, "resources", "icons", "send.svg"))
         self.send_button = QPushButton("")
         self.send_button.setIcon(send_icon)
-        self.send_button.setIconSize(QSize(32, 32))
+        self.send_button.setIconSize(QSize(24, 24))
         self.send_button.clicked.connect(
             lambda: asyncio.create_task(self.send_message())
         )
@@ -151,19 +154,32 @@ class ClientSession(QWidget):
         self.input_layout.addWidget(self.input_box)
         self.input_layout.addWidget(self.send_button)
 
+        self.close_button = QPushButton("Exit Session")
+        self.close_button.clicked.connect(
+            lambda: asyncio.create_task(self.client.exit())
+            if self.client
+            else None
+        )
+
         self.main_layout.addWidget(self.chat_display)
         self.main_layout.addLayout(self.input_layout)
+        self.main_layout.addWidget(self.close_button)
     
     async def start_client(self, url, server_id):
         self.client = cfclientclass.Client()
 
-        client_task = asyncio.create_task(self.client.start_client(url, server_id, self.app.private_key))
-        display_task = asyncio.create_task(self.client_display())
+        try:
+            client_task = asyncio.create_task(self.client.start_client(url, server_id, self.app.private_key))
+            display_task = asyncio.create_task(self.client_display())
 
-        await self.client.stop_event.wait()
+            await self.client.stop_event.wait()
+        except Exception as e:
+            print(f"Client exited with exception {e}")
+        finally:
+            display_task.cancel()
+            await asyncio.gather(display_task, client_task, return_exceptions=True)
 
-        display_task.cancel()
-        await asyncio.gather(display_task, client_task, return_exceptions=True)
+            self.cleanup()
 
     async def client_display(self):
         async for msg in self.client.recv_stream():
@@ -178,11 +194,15 @@ class ClientSession(QWidget):
         self.chat_display.append(f"[{self.app.username}] {text}")
         await self.client.send(text)
 
+    def cleanup(self):
+        self.finished.emit(self)
+
 class MainWindow(QMainWindow):
 
     def __init__(self, app: Application):
         super().__init__()  #Calls parent class constructor
 
+        self._shutting_down = False
         self.app = app
 
         widget = QWidget()  #Container Widget to hold other stuff
@@ -391,8 +411,11 @@ class MainWindow(QMainWindow):
         self.connect_server_page_obj.id_list = QListWidget()
         #Makes it so when you click a user in the list it automatically sets the expected id to their key
         self.connect_server_page_obj.id_list.itemClicked.connect(
-            lambda item: self.connect_server_page_obj.id_box.setText(
-                item.text().split(": ")[1]))
+            lambda item: (
+                self.connect_server_page_obj.id_box.setText(item.text().split(": ")[1]),
+                self.connect_server_page_obj.name_box.setText(item.text().split(": ")[0])
+            )
+        )
         self.connect_server_page_obj.connect_btn = QPushButton("Connect to Server")
         self.connect_server_page_obj.connect_btn.clicked.connect(self.connect_to_server)
 
@@ -419,7 +442,7 @@ class MainWindow(QMainWindow):
             self.login_page_obj.password_box.clear()
 
             self.switch_page(self.DASHBOARD_PAGE)
-            print("Login Succesful!")
+            #print("Login Successful!")
         else:
             self.login_page_obj.password_box.clear()
             print(f"Login failed with error: {error}")
@@ -515,6 +538,7 @@ class MainWindow(QMainWindow):
             self.pages.setCurrentIndex(index)
         if index == self.CONNECT_SERVER_PAGE:
             self.connect_server_page_obj.url_box.clear()
+            self.connect_server_page_obj.name_box.clear()
             self.connect_server_page_obj.id_box.clear()
             self.reload_contacts(self.connect_server_page_obj.id_list)
             self.pages.setCurrentIndex(index)
@@ -534,7 +558,43 @@ class MainWindow(QMainWindow):
         ))
 
         self.pages.setCurrentWidget(client_session)
+        client_session.finished.connect(lambda: self.cleanup_client_session(client_session))
         
+    def cleanup_client_session(self, session):
+        for i in range(self.sidebar_list.count()):
+            item = self.sidebar_list.item(i)
+            if item.data(Qt.ItemDataRole.UserRole) == session:
+                self.sidebar_list.takeItem(i)
+        
+        self.pages.removeWidget(session)
+        session.deleteLater()
+
+    def closeEvent(self, event):
+        #print("close event recieved")
+
+        if self._shutting_down:
+            event.accept()
+            return
+
+        event.ignore()
+        self._shutting_down = True
+        asyncio.create_task(self._shutdown())
+    
+    async def _shutdown(self):
+        #Close all sessions, in reverse
+        for i in reversed(range(self.sidebar_list.count())):
+            #get the item by index
+            item = self.sidebar_list.item(i)
+            session = item.data(Qt.ItemDataRole.UserRole)
+
+            self.sidebar_list.takeItem(i)
+            self.pages.removeWidget(session)
+            session.deleteLater()
+
+        self.app.logout()
+        await asyncio.sleep(0)
+
+        QApplication.instance().quit()
 
     def nothing(self):
         pass
@@ -545,6 +605,9 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     backend = Application()
     main_window = MainWindow(backend)
+    
+    signal.signal(signal.SIGINT, lambda *_: QApplication.quit())
+    
     main_window.setWindowTitle("Encrypted Chat")
     main_window.resize(600, 400)
     main_window.show()
