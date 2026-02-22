@@ -1,0 +1,25 @@
+{
+    "opt_data": {
+        "salt": "f13d3... (salt.hex())",
+        "username": "name"
+    },
+    "nonce": "f13d3... (nonce.hex())",
+    "encrypted (encrypted)": {
+        "priv_bytes": "f13d3... (hexadecimal serialization of a private key)",
+        "pub_bytes": "f13d3... (hexadecimal serialization of a public key)",
+        "known_ids": {
+            "name": "id (hexadecimal serialization of a public key)"
+        },
+        "chat_histories": {
+            "id (hexadecimal serialization of a public key)": {
+                "messages": {
+                    "1": {
+                        "timestamp": 12345,
+                        "from": "peer/you",
+                        "content": "the government sucks"
+                    }
+                }
+            }
+        }
+    }
+}
