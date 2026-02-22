@@ -489,6 +489,7 @@ class MainWindow(QMainWindow):
     def switch_page(self, index, type="static"):
         #This function sets up the page ui and then switches to it
         #Any type of page you add must be in here
+        self.sidebar_list.clearSelection()
         if index == self.LOGIN_PAGE:
             self.login_page_obj.username_box.clear()
             self.login_page_obj.password_box.clear()
