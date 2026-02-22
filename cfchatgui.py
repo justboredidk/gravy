@@ -11,6 +11,8 @@ import sys
 import os
 from jblob import JBlob
 import cfchatutils as cfu
+from cfserverclass import Server
+from cfclientclass import Client
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
@@ -27,6 +29,10 @@ import json
 class ClientSession():
     
     def __init__(self):
+        self.server_name = ""
+        self.client = Client()
+    
+    async def start_client(self, url, server_id, ed_private_key, account):
         pass
 
 class ServerSession():
@@ -152,8 +158,16 @@ class MainWindow(QMainWindow):
         self.dashboard_btn = QPushButton("Dashboard")
         self.dashboard_btn.setIcon(dashboard_btn_icon)
         self.dashboard_btn.setIconSize(QSize(24, 24))
-        self.dashboard_btn.clicked.connect(lambda: self.pages.setCurrentIndex(self.DASHBOARD_PAGE) if self.app.username else None)
+        self.dashboard_btn.clicked.connect(lambda: self.switch_page(self.DASHBOARD_PAGE) if self.app.username else None)
+
+        connect_server_btn_icon = QIcon(os.path.join(self.app.base_dir, "resources", "icons", "connect_server.svg"))
+        self.connect_server_btn = QPushButton("Connect")
+        self.connect_server_btn.setIcon(connect_server_btn_icon)
+        self.connect_server_btn.setIconSize(QSize(24, 24))
+        self.connect_server_btn.clicked.connect(lambda: self.switch_page(self.CONNECT_SERVER_PAGE) if self.app.username else None)
+
         sidebar_layout.addWidget(self.dashboard_btn)
+        sidebar_layout.addWidget(self.connect_server_btn)
         sidebar_layout.addStretch()
 
         layout.addWidget(sidebar, stretch=1)
@@ -170,11 +184,13 @@ class MainWindow(QMainWindow):
         self.LOGIN_PAGE = 0
         self.DASHBOARD_PAGE = 1
         self.MAKE_ACCOUNT_PAGE = 2
+        self.CONNECT_SERVER_PAGE = 3
 
         #Reference Object to organize self variables to be accessible by functions
         self.login_page_obj = SimpleNamespace()
         self.dashboard_page_obj = SimpleNamespace()
         self.make_account_page_obj = SimpleNamespace()
+        self.connect_server_page_obj = SimpleNamespace()
 
         #Login Page (0)
         #region
@@ -210,7 +226,7 @@ class MainWindow(QMainWindow):
 
         #Make account button:
         self.login_page_obj.make_act_btn = QPushButton("Make Account")
-        self.login_page_obj.make_act_btn.clicked.connect(lambda: self.pages.setCurrentIndex(self.MAKE_ACCOUNT_PAGE))
+        self.login_page_obj.make_act_btn.clicked.connect(lambda: self.switch_page(self.MAKE_ACCOUNT_PAGE))
 
         #Add elements to final layout   
         self.login_page_obj.login_ui_layout.addLayout(self.login_page_obj.login_input_layout)
@@ -273,7 +289,7 @@ class MainWindow(QMainWindow):
         self.make_account_page_obj.make_act_page = QWidget()
         self.make_account_page_obj.make_act_layout = QVBoxLayout(self.make_account_page_obj.make_act_page)
         self.make_account_page_obj.make_act_widgets = QWidget()
-        self.make_account_page_obj.make_act_widgets.setMaximumHeight(150)
+        self.make_account_page_obj.make_act_widgets.setMaximumHeight(200)
         self.make_account_page_obj.make_act_widgets.setFixedWidth(400)
         self.make_account_page_obj.make_act_layout.addWidget(self.make_account_page_obj.make_act_widgets, alignment=Qt.AlignmentFlag.AlignCenter)
         self.make_account_page_obj.make_act_widgets_layout = QVBoxLayout(self.make_account_page_obj.make_act_widgets)
@@ -286,6 +302,8 @@ class MainWindow(QMainWindow):
 
         self.make_account_page_obj.submit_button = QPushButton("Create Account")
         self.make_account_page_obj.submit_button.clicked.connect(self.handle_make_account)
+        self.make_account_page_obj.back_button = QPushButton("Back")
+        self.make_account_page_obj.back_button.clicked.connect(lambda: self.switch_page(self.LOGIN_PAGE))
 
         self.make_account_page_obj.password_feeback_label = QLabel("")
 
@@ -293,34 +311,53 @@ class MainWindow(QMainWindow):
         self.make_account_page_obj.make_act_widgets_layout.addWidget(self.make_account_page_obj.password_box)
         self.make_account_page_obj.make_act_widgets_layout.addWidget(self.make_account_page_obj.password_box_check)
         self.make_account_page_obj.make_act_widgets_layout.addWidget(self.make_account_page_obj.submit_button)
+        self.make_account_page_obj.make_act_widgets_layout.addWidget(self.make_account_page_obj.back_button)
         self.make_account_page_obj.make_act_widgets_layout.addWidget(self.make_account_page_obj.password_feeback_label)
 
         #endregion
+        
+        #Connect to Server Page (3)
+        #region
+        self.connect_server_page_obj.page = QWidget()
+        self.connect_server_page_obj.layout = QVBoxLayout(self.connect_server_page_obj.page)
+        self.connect_server_page_obj.ui = QWidget()
+        self.connect_server_page_obj.ui.setFixedWidth(400)
+        self.connect_server_page_obj.ui.setMaximumHeight(600)
+        self.connect_server_page_obj.layout.addWidget(self.connect_server_page_obj.ui)
+        self.connect_server_page_obj.ui_layout = QVBoxLayout(self.connect_server_page_obj.ui)
+        
+        self.connect_server_page_obj.url_box = QLineEdit(placeholderText="ws://localhost:8080")
+        self.connect_server_page_obj.id_box = QLineEdit(placeholderText="Server Private Key")
+        self.connect_server_page_obj.id_list = QListWidget()
+        #Makes it so when you click a user in the list it automatically sets the expected id to their key
+        self.connect_server_page_obj.id_list.itemClicked.connect(
+            lambda item: self.connect_server_page_obj.id_box.setText(
+                item.text().split(": ")[1]))
+        self.connect_server_page_obj.connect_btn = QPushButton("Connect to Server")
+        self.connect_server_page_obj.connect_btn.clicked.connect(self.connect_to_server)
+
+        self.connect_server_page_obj.ui_layout.addWidget(self.connect_server_page_obj.url_box)
+        self.connect_server_page_obj.ui_layout.addWidget(self.connect_server_page_obj.id_box)
+        self.connect_server_page_obj.ui_layout.addWidget(self.connect_server_page_obj.id_list)
+        self.connect_server_page_obj.ui_layout.addWidget(self.connect_server_page_obj.connect_btn)
+        #self.connect_server_page_obj.
+        #endregion
+
         #Add pages to stack
         self.pages.addWidget(self.login_page_obj.login_page)
         self.pages.addWidget(self.dashboard_page_obj.dashboard_page)
         self.pages.addWidget(self.make_account_page_obj.make_act_page)
+        self.pages.addWidget(self.connect_server_page_obj.page)
 
     def handle_login(self):
-        print(self.login_page_obj.username_box.text())
-        print(self.login_page_obj.password_box.text())
+        #print(self.login_page_obj.username_box.text())
+        #print(self.login_page_obj.password_box.text())
         success, error = self.app.login(self.login_page_obj.username_box.text(), self.login_page_obj.password_box.text())
         if success:
             self.login_page_obj.username_box.clear()
             self.login_page_obj.password_box.clear()
 
-            self.dashboard_page_obj.account_information_list.clear()
-            self.dashboard_page_obj.username_list_item = QListWidgetItem(f"Username: {self.app.username}", self.dashboard_page_obj.account_information_list)
-            self.dashboard_page_obj.user_data_key_list_item = QListWidgetItem(f"User Data Key: {self.app.user_data_key.hex()}", self.dashboard_page_obj.account_information_list)
-            self.dashboard_page_obj.private_key_list_item = QListWidgetItem(f"User Private Key: {self.app.private_key.private_bytes(encoding=serialization.Encoding.Raw, 
-                                                                                                                                    format=serialization.PrivateFormat.Raw, 
-                                                                                                                                    encryption_algorithm=serialization.NoEncryption()).hex()}", 
-                                                                                self.dashboard_page_obj.account_information_list)
-            self.dashboard_page_obj.public_key_list_item = QListWidgetItem(f"User Public Key: {self.app.public_key.public_bytes(encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw).hex()}", self.dashboard_page_obj.account_information_list)
-            self.dashboard_page_obj.base_dir_list_item = QListWidgetItem(f"Base Directory: {self.app.base_dir}", self.dashboard_page_obj.account_information_list)
-            self.reload_contacts()
-
-            self.pages.setCurrentIndex(self.DASHBOARD_PAGE)
+            self.switch_page(self.DASHBOARD_PAGE)
             print("Login Succesful!")
         else:
             self.login_page_obj.password_box.clear()
@@ -328,7 +365,7 @@ class MainWindow(QMainWindow):
     
     def handle_logout(self):
         self.app.logout()
-        self.pages.setCurrentIndex(self.LOGIN_PAGE)
+        self.switch_page(self.LOGIN_PAGE)
         self.dashboard_page_obj.account_information_list.clear()
         print("Logged out!")
     
@@ -350,7 +387,7 @@ class MainWindow(QMainWindow):
             self.make_account_page_obj.password_feeback_label.setText("Passwords matched!")
             self.make_account_page_obj.password_feeback_label.setStyleSheet("color: green;")
 
-            self.pages.setCurrentIndex(self.LOGIN_PAGE)
+            self.switch_page(self.LOGIN_PAGE)
             return True
         else:
             print(f"Account creation failed with error {error}")
@@ -366,7 +403,7 @@ class MainWindow(QMainWindow):
     def add_contact(self):
         success, error = self.app.add_contact(self.dashboard_page_obj.ka_username.text(), self.dashboard_page_obj.ka_public_key.text())
         if success:
-            self.reload_contacts()
+            self.reload_contacts(self.dashboard_page_obj.ka_list)
             self.dashboard_page_obj.ka_username.clear()
             self.dashboard_page_obj.ka_public_key.clear()
         else:
@@ -375,18 +412,54 @@ class MainWindow(QMainWindow):
     def remove_contact(self):
         success, error = self.app.remove_contact(self.dashboard_page_obj.ka_username.text())
         if success:
-            self.reload_contacts()
+            self.reload_contacts(self.dashboard_page_obj.ka_list)
             self.dashboard_page_obj.ka_username.clear()
             self.dashboard_page_obj.ka_public_key.clear()
         else:
             print(f"ID could not be removed: {error}")
     
-    def reload_contacts(self):
-        self.dashboard_page_obj.ka_list.setUpdatesEnabled(False)
-        self.dashboard_page_obj.ka_list.clear()
+    def reload_contacts(self, list: QListWidget):
+        list.setUpdatesEnabled(False)
+        list.clear()
         for key in self.app.account.data["known_ids"]:
-            self.dashboard_page_obj.ka_list.addItem(f"{key}: {self.app.account.data["known_ids"][key]}")
-        self.dashboard_page_obj.ka_list.setUpdatesEnabled(True)
+            list.addItem(f"{key}: {self.app.account.data["known_ids"][key]}")
+        list.setUpdatesEnabled(True)
+
+    def switch_page(self, index, type="static"):
+        #This function sets up the page ui and then switches to it
+        #Any type of page you add must be in here
+        if index == self.LOGIN_PAGE:
+            self.login_page_obj.username_box.clear()
+            self.login_page_obj.password_box.clear()
+            self.pages.setCurrentIndex(index)
+        if index == self.MAKE_ACCOUNT_PAGE:
+            self.make_account_page_obj.username_box.clear()
+            self.make_account_page_obj.password_box.clear()
+            self.make_account_page_obj.password_box_check.clear()
+            self.make_account_page_obj.password_feeback_label.setText("")
+            self.pages.setCurrentIndex(index)
+        if index == self.DASHBOARD_PAGE:
+            self.dashboard_page_obj.account_information_list.clear()
+            self.dashboard_page_obj.username_list_item = QListWidgetItem(f"Username: {self.app.username}", self.dashboard_page_obj.account_information_list)
+            self.dashboard_page_obj.user_data_key_list_item = QListWidgetItem(f"User Data Key: {self.app.user_data_key.hex()}", self.dashboard_page_obj.account_information_list)
+            self.dashboard_page_obj.private_key_list_item = QListWidgetItem(f"User Private Key: {self.app.private_key.private_bytes(encoding=serialization.Encoding.Raw, 
+                                                                                                                                    format=serialization.PrivateFormat.Raw, 
+                                                                                                                                    encryption_algorithm=serialization.NoEncryption()).hex()}", 
+                                                                                self.dashboard_page_obj.account_information_list)
+            self.dashboard_page_obj.public_key_list_item = QListWidgetItem(f"User Public Key: {self.app.public_key.public_bytes(encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw).hex()}", self.dashboard_page_obj.account_information_list)
+            self.dashboard_page_obj.base_dir_list_item = QListWidgetItem(f"Base Directory: {self.app.base_dir}", self.dashboard_page_obj.account_information_list)
+            self.dashboard_page_obj.ka_username.clear()
+            self.dashboard_page_obj.ka_public_key.clear()
+            self.reload_contacts(self.dashboard_page_obj.ka_list)
+            self.pages.setCurrentIndex(index)
+        if index == self.CONNECT_SERVER_PAGE:
+            self.connect_server_page_obj.url_box.clear()
+            self.connect_server_page_obj.id_box.clear()
+            self.reload_contacts(self.connect_server_page_obj.id_list)
+            self.pages.setCurrentIndex(index)
+
+    def connect_to_server(self):
+        pass
 
     def nothing(self):
         pass
