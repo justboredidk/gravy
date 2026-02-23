@@ -1,5 +1,7 @@
 from PySide6.QtCore import Qt, QSize, Signal
-from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QPushButton, QVBoxLayout, QHBoxLayout, QWidget, QLineEdit, QTextBrowser, QStyle, QSizePolicy, QStackedWidget, QListWidget, QListWidgetItem
+from PySide6.QtWidgets import (QApplication, QLabel, QMainWindow, QPushButton, QVBoxLayout, QHBoxLayout, QWidget, QLineEdit, 
+                               QTextBrowser,QStyle, QSizePolicy, QStackedWidget, QListWidget, QListWidgetItem, QComboBox,
+                               QTabWidget)
 from PySide6.QtGui import QColor, QPalette, QIcon
 from PySide6 import QtSvg
 
@@ -16,6 +18,7 @@ from jblob import JBlob
 import cfchatutils as cfu
 import cfserverclass
 import cfclientclass
+from tunnelmanager import Tunnel
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
@@ -28,11 +31,7 @@ import json
 #Intgrate proxy
 #Add Chat history
 #Refactor client and server to allow for transmission of files, images, update encryption protocol to be more flexible and tolerant of delays.
-
-class ServerSession():
-    
-    def __init__(self):
-        pass
+        
 
 class Application():
 
@@ -133,6 +132,7 @@ class ClientSession(QWidget):
         self.setMaximumWidth(600)
 
         self.main_layout = QVBoxLayout()
+        self.main_layout.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         self.setLayout(self.main_layout)
         self.input_layout = QHBoxLayout()
 
@@ -197,6 +197,48 @@ class ClientSession(QWidget):
     def cleanup(self):
         self.finished.emit(self)
 
+#ServerSession
+#region
+class ServerSession(QWidget):
+    finished = Signal(object)
+
+    def __init__(self, app: Application, parent=None):
+        super().__init__(parent)
+        self.app = app
+
+        self.main_layout = QVBoxLayout()
+        self.setLayout(self.main_layout)
+        self.main_layout.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        self.tab_widget = QTabWidget()
+
+        self.server_manager = ServerManager(self)
+        self.tab_widget.addTab(self.server_manager, "Server Manager")
+
+        self.main_layout.addWidget(self.tab_widget)
+class ServerManager(QWidget):
+
+    def __init__(self, server_session: ServerSession, parent=None):
+        super().__init__(parent)
+        self.server_session = server_session
+
+        self.setFixedWidth(400)
+        self.main_layout = QVBoxLayout()
+        self.setLayout(self.main_layout)
+        self.main_layout.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+
+        self.label = QLabel("Server Manager Beep Boop")
+        #on epstein :skull:
+        self.client_list = QListWidget()
+        self.kick_button = QPushButton("Kick Selected Client")
+        self.shutdown_button = QPushButton("Stop Server")
+
+        self.main_layout.addWidget(self.label)
+        self.main_layout.addWidget(self.client_list)
+        self.main_layout.addWidget(self.kick_button)
+        self.main_layout.addWidget(self.shutdown_button)
+
+
+#endgegion
 class MainWindow(QMainWindow):
 
     def __init__(self, app: Application):
@@ -204,6 +246,7 @@ class MainWindow(QMainWindow):
 
         self._shutting_down = False
         self.app = app
+        self.server_session = None
 
         widget = QWidget()  #Container Widget to hold other stuff
         self.setCentralWidget(widget)   #Widget expands to fill window
@@ -236,6 +279,12 @@ class MainWindow(QMainWindow):
         self.connect_server_btn.setIconSize(QSize(24, 24))
         self.connect_server_btn.clicked.connect(lambda: self.switch_page(self.CONNECT_SERVER_PAGE) if self.app.username else None)
 
+        server_btn_icon = QIcon(os.path.join(self.app.base_dir, "resources", "icons", "server.svg"))
+        self.server_btn = QPushButton("Server")
+        self.server_btn.setIcon(server_btn_icon)
+        self.server_btn.setIconSize(QSize(24, 24))
+        self.server_btn.clicked.connect(lambda: self.switch_page(self.CONFIGURE_SERVER_PAGE) if self.app.username else None)
+
         self.sidebar_list = QListWidget()
         self.sidebar_list.itemClicked.connect(
             lambda item: self.pages.setCurrentWidget(
@@ -245,6 +294,7 @@ class MainWindow(QMainWindow):
 
         sidebar_layout.addWidget(self.dashboard_btn)
         sidebar_layout.addWidget(self.connect_server_btn)
+        sidebar_layout.addWidget(self.server_btn)
         sidebar_layout.addWidget(self.sidebar_list)
         sidebar_layout.addStretch()
 
@@ -263,12 +313,14 @@ class MainWindow(QMainWindow):
         self.DASHBOARD_PAGE = 1
         self.MAKE_ACCOUNT_PAGE = 2
         self.CONNECT_SERVER_PAGE = 3
+        self.CONFIGURE_SERVER_PAGE = 4
 
         #Reference Object to organize self variables to be accessible by functions
         self.login_page_obj = SimpleNamespace()
         self.dashboard_page_obj = SimpleNamespace()
         self.make_account_page_obj = SimpleNamespace()
         self.connect_server_page_obj = SimpleNamespace()
+        self.configure_server_page_obj = SimpleNamespace()
 
         #Login Page (0)
         #region
@@ -402,7 +454,7 @@ class MainWindow(QMainWindow):
         self.connect_server_page_obj.ui = QWidget()
         self.connect_server_page_obj.ui.setFixedWidth(400)
         self.connect_server_page_obj.ui.setMaximumHeight(600)
-        self.connect_server_page_obj.layout.addWidget(self.connect_server_page_obj.ui)
+        self.connect_server_page_obj.layout.addWidget(self.connect_server_page_obj.ui, alignment=Qt.AlignmentFlag.AlignHCenter)
         self.connect_server_page_obj.ui_layout = QVBoxLayout(self.connect_server_page_obj.ui)
         
         self.connect_server_page_obj.url_box = QLineEdit(placeholderText="ws://localhost:8080")
@@ -427,11 +479,37 @@ class MainWindow(QMainWindow):
         #self.connect_server_page_obj.
         #endregion
 
+        #Configure to Server Page (4)
+        #region
+        self.configure_server_page_obj.page = QWidget()
+        self.configure_server_page_obj.layout = QVBoxLayout(self.configure_server_page_obj.page)
+        self.configure_server_page_obj.ui = QWidget()
+        self.configure_server_page_obj.ui.setFixedWidth(400)
+        self.configure_server_page_obj.ui.setMaximumHeight(100)
+        self.configure_server_page_obj.ui_layout = QVBoxLayout(self.configure_server_page_obj.ui)
+        self.configure_server_page_obj.layout.addWidget(self.configure_server_page_obj.ui, alignment=Qt.AlignmentFlag.AlignHCenter)
+
+        self.configure_server_page_obj.port_box = QLineEdit(placeholderText="Port")
+        self.configure_server_page_obj.tunnel_selector = QComboBox()
+        self.configure_server_page_obj.tunnel_selector.addItem("No Tunnel")
+        self.configure_server_page_obj.tunnel_selector.addItem("Cloudflare")
+        self.configure_server_page_obj.tunnel_selector.addItem("Ngrok")
+
+        self.configure_server_page_obj.start_button = QPushButton("Start Server")
+        self.configure_server_page_obj.start_button.clicked.connect(self.start_server)
+
+        self.configure_server_page_obj.ui_layout.addWidget(self.configure_server_page_obj.port_box)
+        self.configure_server_page_obj.ui_layout.addWidget(self.configure_server_page_obj.tunnel_selector)
+        self.configure_server_page_obj.ui_layout.addWidget(self.configure_server_page_obj.start_button)
+        self.configure_server_page_obj.ui_layout.addStretch()
+        #endregion
+
         #Add pages to stack
         self.pages.addWidget(self.login_page_obj.login_page)
         self.pages.addWidget(self.dashboard_page_obj.dashboard_page)
         self.pages.addWidget(self.make_account_page_obj.make_act_page)
         self.pages.addWidget(self.connect_server_page_obj.page)
+        self.pages.addWidget(self.configure_server_page_obj.page)
 
     def handle_login(self):
         #print(self.login_page_obj.username_box.text())
@@ -542,6 +620,12 @@ class MainWindow(QMainWindow):
             self.connect_server_page_obj.id_box.clear()
             self.reload_contacts(self.connect_server_page_obj.id_list)
             self.pages.setCurrentIndex(index)
+        if index == self.CONFIGURE_SERVER_PAGE and not self.server_session:
+            self.configure_server_page_obj.port_box.clear()
+            self.configure_server_page_obj.tunnel_selector.setCurrentIndex(0)
+            self.pages.setCurrentIndex(index)
+        elif index == self.CONFIGURE_SERVER_PAGE and self.server_session:
+            self.pages.setCurrentWidget(self.server_session)
 
     def connect_to_server(self):
         client_session = ClientSession(self.app, self.connect_server_page_obj.name_box.text())
@@ -560,7 +644,7 @@ class MainWindow(QMainWindow):
         self.pages.setCurrentWidget(client_session)
         client_session.finished.connect(lambda: self.cleanup_client_session(client_session))
         
-    def cleanup_client_session(self, session):
+    def cleanup_client_session(self, session: ClientSession):
         for i in range(self.sidebar_list.count()):
             item = self.sidebar_list.item(i)
             if item.data(Qt.ItemDataRole.UserRole) == session:
@@ -568,6 +652,17 @@ class MainWindow(QMainWindow):
         
         self.pages.removeWidget(session)
         session.deleteLater()
+
+    def start_server(self):
+        print(f"server started on port {self.configure_server_page_obj.port_box.text()} with tunnel {self.configure_server_page_obj.tunnel_selector.currentText()}")
+
+        self.server_session = ServerSession(self.app)
+        self.pages.addWidget(self.server_session)
+        self.pages.setCurrentWidget(self.server_session)
+    
+    def cleanup_server_session(self):
+        self.pages.removeWidget(self.server_session)
+        self.server_session.deleteLater()
 
     def closeEvent(self, event):
         #print("close event recieved")
