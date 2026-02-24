@@ -22,6 +22,7 @@ class Server:
     def __init__(self):
         self.clients = {}
         self.client_keys = {}
+        self.client_names = {}
         self.client_counter = itertools.count()
         self.inbound = asyncio.Queue()
         self.outbound = asyncio.Queue()
@@ -31,6 +32,7 @@ class Server:
         self.log = []
         self.stop_event = asyncio.Event()
         self.STOP = object()
+        self.join_queue = asyncio.Queue()
 
     async def log_event(self, event: str):
         print_formatted_text(event)
@@ -51,6 +53,8 @@ class Server:
         finally:
             await self.log_event(f"Client {client_id} disconnected!")
             self.clients.pop(client_id, None)
+            self.client_names.pop(client_id, None)
+            await self.join_queue.put(("leave", client_id, None))
 
     async def kick(self, client_id, reason):
         client_id = int(client_id)
@@ -58,6 +62,7 @@ class Server:
         #await self.log_event(self.clients)
         try:
             websocket = self.clients.pop(client_id, None)
+            self.client_names.pop(client_id, None)
             self.client_keys.pop(client_id, None)
         except ValueError:
             await self.log_event(f"Client {client_id} not found!")
@@ -93,41 +98,6 @@ class Server:
             except websockets.ConnectionClosed:
                 await self.log_event("Client Disconnected, Handler Disconnect")
                 continue
-
-    #unused
-    #region            
-    async def server_prompt(self, stop_server):
-        while not stop_server.is_set():
-            cmd = await self.session.prompt_async("S> ")
-
-            if cmd == "exit":
-                await self.log_event("Shutting down server")
-                stop_server.set()
-                await self.inbound.put((self.STOP, None))
-                await self.outbound.put((self.STOP, None))
-                await self.inbound_usr.put((self.STOP, None))
-                await self.outbound_usr.put((self.STOP, None))
-                await self.encryption.put((self.STOP, None, None))
-                return
-            
-            if not self.clients: #check if empty
-                await self.log_event(f"No client connected!")
-                continue
-
-            client_id = next(iter(self.clients.keys())) #first client_id in dictionary
-            
-            try:
-                await self.encryption.put(("usr", client_id, cmd))
-            except websockets.ConnectionClosed:
-                await self.log_event("Client disconnected")
-
-    async def server_display(self, stop_server):
-        while not stop_server.is_set():
-            client_id, data = await self.inbound_usr.get() #wait to recieve a message
-            if client_id == self.STOP:
-                continue
-            print_formatted_text(f"[{client_id}] {data}")
-    #endregion
     
     async def send(self, client_id, cmd):
         try:
@@ -149,7 +119,7 @@ class Server:
                 break
             yield usr_msg
 
-    async def server_encryption(self, stop_server: asyncio.Event, ed_private_key: Ed25519PrivateKey, account: dict):
+    async def server_encryption(self, stop_server: asyncio.Event, ed_private_key: Ed25519PrivateKey, known_ids: dict):
         try:
             while not stop_server.is_set():
                 #print_formatted_text('Awaiting messages')
@@ -189,7 +159,7 @@ class Server:
                         random
                     )
 
-                    await self.log_event(f"challenge i made (server+client+random) {challenge.hex()}")
+                    #await self.log_event(f"challenge i made (server+client+random) {challenge.hex()}")
 
                     signature = ed_private_key.sign(challenge)
 
@@ -199,7 +169,7 @@ class Server:
                         'signature': signature.hex()
                         }))
                     
-                    await self.log_event(f"Signature i made {signature.hex()}")
+                    #await self.log_event(f"Signature i made {signature.hex()}")
                     
                     #Wait until message with signature is recieved
                     while 1:
@@ -223,10 +193,9 @@ class Server:
                         random
                     )
 
-                    await self.log_event(f"challenge server made (server+client+random) {challenge.hex()}")
-                    await self.log_event(f"Signature i recieved {signature.hex()}")
+                    #await self.log_event(f"challenge server made (server+client+random) {challenge.hex()}")
+                    #await self.log_event(f"Signature i recieved {signature.hex()}")
 
-                    known_ids = cfu.load_identities(account)
                     matched_us = None
                     matched_key = None
 
@@ -234,7 +203,10 @@ class Server:
                         await self.log_event("No registered IDs")
                     else:
                         for username, key in known_ids.items():
-                            unpacked_key = Ed25519PublicKey.from_public_bytes(bytes.fromhex(key))
+                            try:
+                                unpacked_key = Ed25519PublicKey.from_public_bytes(bytes.fromhex(key))
+                            except:
+                                await self.log_event("Key could not be unpacked!")
                             try:
                                 unpacked_key.verify(signature, challenge)
                                 matched_us = username
@@ -249,6 +221,9 @@ class Server:
                         continue
                     else:
                         await self.log_event(f'Client {client_id} identified as {matched_us}, type kick {client_id} if unexpected!')
+
+                    self.client_names[client_id] = matched_us
+                    await self.join_queue.put(("join", client_id, matched_us))
 
                     #sets up server_key (sent by server), and client_key (sent by client)
                     #region
@@ -328,7 +303,7 @@ class Server:
         await self.encryption.put((self.STOP, None, None))
         return
 
-    async def start_server(self, port, ed_private_key, account):
+    async def start_server(self, port, ed_private_key, known_ids):
         cfu.empty_queue(self.inbound)
         cfu.empty_queue(self.inbound_usr)
         cfu.empty_queue(self.outbound)
@@ -340,7 +315,7 @@ class Server:
 
             tasks = [
                 asyncio.create_task(self.server_router(self.stop_event)),
-                asyncio.create_task(self.server_encryption(self.stop_event, ed_private_key, account)),
+                asyncio.create_task(self.server_encryption(self.stop_event, ed_private_key, known_ids)),
             ]
 
             await self.stop_event.wait()

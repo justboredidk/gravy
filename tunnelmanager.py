@@ -18,6 +18,7 @@ class Tunnel():
 
     async def open_tunnel(self, tutype, port, basedir):
         if tutype == Tunnel.cloudflare:
+            print("Opening Cloudflare Tunnel!")
             self.process = await asyncio.create_subprocess_exec(
                 os.path.join(basedir, "resources", "cloudflared"), "tunnel", "--url", f"http://localhost:{port}", "--output", "json",
                 stdout=asyncio.subprocess.PIPE,
@@ -48,7 +49,13 @@ class Tunnel():
                     #print(self.url)
                     break
 
-        return self.url
+            return self.url
+
+        elif tutype == Tunnel.disabled:
+            return "disabled"
+        
+        elif tutype == Tunnel.ngrok:
+            return "Nrgrok is not supported!"
     
     async def close(self):
         if self.process:

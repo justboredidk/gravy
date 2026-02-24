@@ -64,6 +64,8 @@ class Application():
             #print(f"Priv: {decrypted_blob['priv_bytes']}, Pub: {decrypted_blob['pub_bytes']}")
             self.private_key = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(self.account.data['priv_bytes']))
             self.public_key = Ed25519PublicKey.from_public_bytes(bytes.fromhex(self.account.data['pub_bytes']))
+            #for username, key in self.account.data["known_ids"].items():
+                #print(f"{username} {key}")
 
             test_sig = self.private_key.sign(b'test')
             try:
@@ -205,17 +207,89 @@ class ServerSession(QWidget):
     def __init__(self, app: Application, parent=None):
         super().__init__(parent)
         self.app = app
+        self.clients = {}
 
         self.main_layout = QVBoxLayout()
         self.setLayout(self.main_layout)
         self.main_layout.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         self.tab_widget = QTabWidget()
 
+        self.main_layout.addWidget(self.tab_widget)
+        self.server: cfserverclass.Server = None
+        self.tunnel = None
+
+    async def start_server(self, port, tunnel_type=Tunnel.disabled):
+        self.server = cfserverclass.Server()
+        self.tunnel = Tunnel()
+        await self.tunnel.open_tunnel(tunnel_type, port, self.app.base_dir)
+
+        print("Tunnel Opened")
+
         self.server_manager = ServerManager(self)
         self.tab_widget.addTab(self.server_manager, "Server Manager")
 
-        self.main_layout.addWidget(self.tab_widget)
+        try:
+            server_task = asyncio.create_task(self.server.start_server(port, self.app.private_key, self.app.account.data["known_ids"]))
+            client_manager_task = asyncio.create_task(self.client_manager())
+            client_forwarder_task = asyncio.create_task(self.client_forwarder())
+
+            await self.server.stop_event.wait()
+        except Exception as e:
+            print(f"Client manager exited with exception {e}")
+        finally:
+            server_task.cancel()
+            client_manager_task.cancel()
+            client_forwarder_task.cancel()
+            await asyncio.gather(server_task, client_manager_task, client_forwarder_task, return_exceptions=True)
+
+            await self.cleanup()
+    
+    async def client_manager(self):
+        while not self.server.stop_event.is_set():
+            mode, client_id, name = await self.server.join_queue.get()
+            #print("Ui recieved client join")
+
+            if mode == "join":
+                try:
+                    chat = ServerChat(self.app, self, client_id)
+                except Exception as e:
+                    print(f"Chat tab failed with {e}")
+                #print("Created chat tab")
+                self.clients[client_id] = chat
+                self.tab_widget.addTab(chat, name)
+                self.server_manager.reload_clients()
+                #print("added chat tab")
+            elif mode == "leave":
+                self.tab_widget.removeTab(self.tab_widget.indexOf(self.clients[client_id]))
+                self.clients[client_id].deleteLater()
+                self.server_manager.reload_clients()
+
+
+    async def client_forwarder(self):
+        async for client_id, message in self.server.recv_stream():
+            if message == self.server.STOP:
+                break
+            chat: ServerChat = self.clients[client_id]
+            chat.display(message)
+    
+    async def kick_client(self, client_id):
+        if client_id in self.server.clients.keys():
+            await self.server.kick(client_id, "U SUCK BOZO")
+            self.tab_widget.removeTab(self.tab_widget.indexOf(self.clients[client_id]))
+            self.clients[client_id].deleteLater()
+            self.server_manager.reload_clients()
+        else:
+            print(f"Print client {client_id} does not exist")
+
+    async def shutdown(self):
+        await self.server.exit()
+
+    async def cleanup(self):
+        await self.tunnel.close()
+        self.finished.emit(self)
+        
 class ServerManager(QWidget):
+    finished = Signal(object)
 
     def __init__(self, server_session: ServerSession, parent=None):
         super().__init__(parent)
@@ -227,18 +301,95 @@ class ServerManager(QWidget):
         self.main_layout.setAlignment(Qt.AlignmentFlag.AlignHCenter)
 
         self.label = QLabel("Server Manager Beep Boop")
+        self.url_label = QLabel(f"Tunnel URL: {self.server_session.tunnel.url}")
+        self.url_label.setWordWrap(True)
+        self.url_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         #on epstein :skull:
         self.client_list = QListWidget()
         self.kick_button = QPushButton("Kick Selected Client")
+        self.kick_button.clicked.connect(
+            lambda: asyncio.create_task(self.server_session.kick_client(
+                int(self.client_list.currentItem().data(Qt.ItemDataRole.UserRole))
+            ))
+            if self.client_list.currentItem()
+            else None
+        )
         self.shutdown_button = QPushButton("Stop Server")
+        self.shutdown_button.clicked.connect(lambda: asyncio.create_task(server_session.shutdown()))
 
         self.main_layout.addWidget(self.label)
+        self.main_layout.addWidget(self.url_label)
         self.main_layout.addWidget(self.client_list)
         self.main_layout.addWidget(self.kick_button)
         self.main_layout.addWidget(self.shutdown_button)
+    
+    def reload_clients(self):
+        #print("Reloading clients")
+        self.client_list.setUpdatesEnabled(False)
+        self.client_list.clear()
+        for key in self.server_session.server.client_names:
+            item = QListWidgetItem(f"{self.server_session.server.client_names[key]} ({key})")
+            item.setData(Qt.ItemDataRole.UserRole, int(key))
+            self.client_list.addItem(item)
+        self.client_list.setUpdatesEnabled(True)
+        #print("Reloaded clients")
 
+class ServerChat(QWidget):
+    finished = Signal(object)
 
-#endgegion
+    def __init__(self, app: Application, server_session: ServerSession, client_id, parent=None):
+        super().__init__(parent)
+        self.app = app
+        self.server_session = server_session
+        self.client_id = client_id
+        self.client_name = self.server_session.server.client_names[client_id]
+
+        self.setMaximumWidth(600)
+
+        self.main_layout = QVBoxLayout()
+        self.main_layout.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        self.setLayout(self.main_layout)
+        self.input_layout = QHBoxLayout()
+
+        self.chat_display = QTextBrowser()
+        self.chat_display.setReadOnly(True)
+
+        self.input_box = QLineEdit(placeholderText="Message")
+        self.input_box.returnPressed.connect(
+            lambda: asyncio.create_task(self.send_message())
+        )
+        send_icon = QIcon(os.path.join(self.app.base_dir, "resources", "icons", "send.svg"))
+        self.send_button = QPushButton("")
+        self.send_button.setIcon(send_icon)
+        self.send_button.setIconSize(QSize(24, 24))
+        self.send_button.clicked.connect(
+            lambda: asyncio.create_task(self.send_message())
+        )
+
+        self.input_layout.addWidget(self.input_box)
+        self.input_layout.addWidget(self.send_button)
+
+        self.close_button = QPushButton("Kick Client")
+        self.close_button.clicked.connect(
+            lambda: asyncio.create_task(self.server_session.kick_client(self.client_id))
+            if self.server_session.server
+            else None
+        )
+
+        self.main_layout.addWidget(self.chat_display)
+        self.main_layout.addLayout(self.input_layout)
+        self.main_layout.addWidget(self.close_button)
+
+    def display(self, msg):
+        self.chat_display.append(f"[{self.client_name}] {msg}")
+
+    async def send_message(self):
+        text = self.input_box.text()
+        self.input_box.clear()
+        self.chat_display.append(f"[{self.app.username}] {text}")
+        await self.server_session.server.send(self.client_id, text)
+
+#endregion
 class MainWindow(QMainWindow):
 
     def __init__(self, app: Application):
@@ -324,8 +475,7 @@ class MainWindow(QMainWindow):
 
         #Login Page (0)
         #region
-
-        #GENIUNELY WTF is this stupid ass code I can't even ts is so dumb
+        
         #I think basically: Stacked widget needs to hold widget, widget needs ot have layout to hold other widget. Only widget can be center in layout. login ui widget contains layout. login_ui_layout contains input layout and button. AHHHH
         self.login_page_obj.login_page = QWidget()  #Page Container
         self.login_page_obj.login_layout = QVBoxLayout(self.login_page_obj.login_page)  #Layout to hold items within the page
@@ -347,6 +497,8 @@ class MainWindow(QMainWindow):
         self.login_page_obj.login_text_layout = QVBoxLayout()
         self.login_page_obj.username_box = QLineEdit(placeholderText="Username")
         self.login_page_obj.password_box = QLineEdit(placeholderText="Password")
+        self.login_page_obj.username_box.returnPressed.connect(self.login_page_obj.password_box.setFocus)
+        self.login_page_obj.password_box.returnPressed.connect(self.handle_login)
         self.login_page_obj.password_box.setEchoMode(QLineEdit.EchoMode.Password)
         self.login_page_obj.login_text_layout.addWidget(self.login_page_obj.username_box)
         self.login_page_obj.login_text_layout.addWidget(self.login_page_obj.password_box)
@@ -491,9 +643,9 @@ class MainWindow(QMainWindow):
 
         self.configure_server_page_obj.port_box = QLineEdit(placeholderText="Port")
         self.configure_server_page_obj.tunnel_selector = QComboBox()
-        self.configure_server_page_obj.tunnel_selector.addItem("No Tunnel")
-        self.configure_server_page_obj.tunnel_selector.addItem("Cloudflare")
-        self.configure_server_page_obj.tunnel_selector.addItem("Ngrok")
+        self.configure_server_page_obj.tunnel_selector.addItem("No Tunnel", userData=Tunnel.disabled)
+        self.configure_server_page_obj.tunnel_selector.addItem("Cloudflare", userData=Tunnel.cloudflare)
+        #self.configure_server_page_obj.tunnel_selector.addItem("Ngrok", userData=Tunnel.ngrok)
 
         self.configure_server_page_obj.start_button = QPushButton("Start Server")
         self.configure_server_page_obj.start_button.clicked.connect(self.start_server)
@@ -625,11 +777,16 @@ class MainWindow(QMainWindow):
             self.configure_server_page_obj.tunnel_selector.setCurrentIndex(0)
             self.pages.setCurrentIndex(index)
         elif index == self.CONFIGURE_SERVER_PAGE and self.server_session:
-            self.pages.setCurrentWidget(self.server_session)
+            try:
+                self.pages.setCurrentWidget(self.server_session)
+            except:
+                self.configure_server_page_obj.port_box.clear()
+                self.configure_server_page_obj.tunnel_selector.setCurrentIndex(0)
+                self.server_session = None
+                self.pages.setCurrentIndex(index)
 
     def connect_to_server(self):
         client_session = ClientSession(self.app, self.connect_server_page_obj.name_box.text())
-        self.pages.addWidget(client_session)
 
         item = QListWidgetItem(self.connect_server_page_obj.name_box.text())
         item.setData(Qt.ItemDataRole.UserRole, client_session)
@@ -641,6 +798,7 @@ class MainWindow(QMainWindow):
             self.connect_server_page_obj.id_box.text()
         ))
 
+        self.pages.addWidget(client_session)
         self.pages.setCurrentWidget(client_session)
         client_session.finished.connect(lambda: self.cleanup_client_session(client_session))
         
@@ -652,17 +810,28 @@ class MainWindow(QMainWindow):
         
         self.pages.removeWidget(session)
         session.deleteLater()
+        self.switch_page(self.DASHBOARD_PAGE)
 
     def start_server(self):
-        print(f"server started on port {self.configure_server_page_obj.port_box.text()} with tunnel {self.configure_server_page_obj.tunnel_selector.currentText()}")
+        print(f"server started on port {self.configure_server_page_obj.port_box.text()} with tunnel {self.configure_server_page_obj.tunnel_selector.currentData()}")
 
         self.server_session = ServerSession(self.app)
+        asyncio.create_task(self.server_session.start_server(
+            int(self.configure_server_page_obj.port_box.text()), 
+            self.configure_server_page_obj.tunnel_selector.currentData()
+        ))
         self.pages.addWidget(self.server_session)
         self.pages.setCurrentWidget(self.server_session)
+
+        self.server_session.finished.connect(self.cleanup_server_session)
     
     def cleanup_server_session(self):
         self.pages.removeWidget(self.server_session)
         self.server_session.deleteLater()
+
+        self.configure_server_page_obj.port_box.clear()
+        self.configure_server_page_obj.tunnel_selector.setCurrentIndex(0)
+        self.pages.setCurrentIndex(self.CONFIGURE_SERVER_PAGE)
 
     def closeEvent(self, event):
         #print("close event recieved")
@@ -676,6 +845,7 @@ class MainWindow(QMainWindow):
         asyncio.create_task(self._shutdown())
     
     async def _shutdown(self):
+        print("Shutting Down")
         #Close all sessions, in reverse
         for i in reversed(range(self.sidebar_list.count())):
             #get the item by index
@@ -685,6 +855,11 @@ class MainWindow(QMainWindow):
             self.sidebar_list.takeItem(i)
             self.pages.removeWidget(session)
             session.deleteLater()
+        
+        try:
+            await self.server_session.shutdown()
+        except:
+            pass
 
         self.app.logout()
         await asyncio.sleep(0)
