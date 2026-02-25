@@ -36,14 +36,15 @@ import json
 class Application():
 
     def __init__(self):
-        self.account = None
+        self.account: JBlob = None
         self.user_data_key = None
         self.private_key = None
         self.public_key = None
         self.username = None
         self.base_dir = os.path.dirname(os.path.abspath(__file__))
+        self.save_task: asyncio.Task = None
     
-    def login(self, username, password):
+    async def login(self, username, password):
         path = os.path.join(self.base_dir, f"{username}.act")
         self.account = JBlob(path)
 
@@ -70,13 +71,27 @@ class Application():
             test_sig = self.private_key.sign(b'test')
             try:
                 self.public_key.verify(test_sig, b'test')
+                self.save_task = asyncio.create_task(self.periodic_save(5.0))
                 return True, None
             except InvalidSignature:
                 return False, "keys_did_not_match"
         else:
             return False, "incorrect_password"
     
-    def logout(self):
+    async def logout(self):
+        self.save_task.cancel()
+        try:
+            await self.save_task
+        except asyncio.CancelledError:
+            pass
+        
+        if self.account:
+            try:
+                self.account.encrypt(self.user_data_key)
+                self.account.save()
+            except AttributeError:
+                pass
+
         self.account = None
         self.user_data_key = None
         self.private_key = None
@@ -90,7 +105,7 @@ class Application():
         #decrypted_check = decrypt(key, encrypted_check["nonce"], encrypted_check["ciphertext"])
         #account.data is encrypted, account.opt_data is not encrypted, so it is used to store the salt and othername
 
-        account = JBlob()
+        account = JBlob(path)
         account.opt_data = {
             "salt": salt.hex(),
             "username": username,
@@ -106,7 +121,7 @@ class Application():
         }
 
         account.encrypt(key)
-        success = account.save(path)
+        success = account.save()
         return success, "File Could Not Save"
     
     def add_contact(self, name, id):
@@ -121,6 +136,19 @@ class Application():
             return False, f"Name {name} not found"
         self.account.encrypt(self.user_data_key)
         return self.account.save(), "File Couldn't Save"
+    
+    async def periodic_save(self, period: float = 5.0):
+        while True:
+            await asyncio.sleep(period)
+
+            #print("checking if save is needed")
+            if self.account.is_dirty():
+                self.account.encrypt(self.user_data_key)
+                self.account.save()
+                #print("saved")
+            else:
+                #print("save not needed")
+                pass
 
 class MainWindow(QMainWindow):
 
@@ -240,13 +268,28 @@ class MainWindow(QMainWindow):
                 self.server_session = None
                 self.pages.setCurrentIndex(index)
     
-    def cleanup_server_session(self):
-        self.pages.removeWidget(self.server_session)
-        self.server_session.deleteLater()
+    def cleanup_client_sessions(self):
+        for i in range(self.sidebar_list.count()):
+            item = self.sidebar_list.item(i)
+            session = item.data(Qt.ItemDataRole.UserRole)
+            self.sidebar_list.takeItem(i)
+            
+            if session:
+                self.pages.removeWidget(session)
+                session.deleteLater()
 
-        self.configure_server_page.port_box.clear()
-        self.configure_server_page.tunnel_selector.setCurrentIndex(0)
-        self.pages.setCurrentIndex(self.CONFIGURE_SERVER_PAGE)
+
+    def cleanup_server_session(self):
+        try:
+            if self.server_session:
+                self.pages.removeWidget(self.server_session)
+                self.server_session.deleteLater()
+        except:
+            pass
+        finally:
+            self.configure_server_page.port_box.clear()
+            self.configure_server_page.tunnel_selector.setCurrentIndex(0)
+            self.pages.setCurrentIndex(self.CONFIGURE_SERVER_PAGE)
 
     def closeEvent(self, event):
         #print("close event recieved")
@@ -260,7 +303,7 @@ class MainWindow(QMainWindow):
         asyncio.create_task(self._shutdown())
     
     async def _shutdown(self):
-        print("Shutting Down")
+        #print("Shutting Down")
         #Close all sessions, in reverse
         for i in reversed(range(self.sidebar_list.count())):
             #get the item by index
@@ -275,8 +318,8 @@ class MainWindow(QMainWindow):
             await self.server_session.shutdown()
         except:
             pass
-
-        self.app.logout()
+        
+        await self.app.logout()
         await asyncio.sleep(0)
 
         QApplication.instance().quit()

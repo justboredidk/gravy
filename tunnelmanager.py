@@ -13,6 +13,7 @@ class Tunnel():
     def __init__(self):
         self.url = ""
         self.kwargs = {}
+        self.process = None
         if sys.platform == "win32":
             self.kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 

@@ -14,6 +14,8 @@ from types import SimpleNamespace
 import asyncio
 import sys
 import os
+import time
+import datetime
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 from cryptography.exceptions import InvalidSignature
@@ -101,16 +103,16 @@ class ClientSession(QWidget):
             self.cleanup()
 
     async def client_display(self):
-        async for msg in self.client.recv_stream():
+        async for msg, timestamp in self.client.recv_stream():
             if msg == self.client.STOP:
                 break
 
-            self.chat_display.append(f"[{self.server_name}] {msg}")
+            self.chat_display.append(f"[{self.server_name}:{timestamp}] {msg}")
 
     async def send_message(self):
         text = self.input_box.text()
         self.input_box.clear()
-        self.chat_display.append(f"[{self.app.username}] {text}")
+        self.chat_display.append(f"[{self.app.username}:{int(time.time())}] {text}")
         await self.client.send(text)
 
     def cleanup(self):
@@ -138,7 +140,7 @@ class ServerSession(QWidget):
         self.tunnel = Tunnel()
         await self.tunnel.open_tunnel(tunnel_type, port, self.app.base_dir)
 
-        print("Tunnel Opened")
+        #print("Tunnel Opened")
 
         self.server_manager = ServerManager(self)
         self.tab_widget.addTab(self.server_manager, "Server Manager")
@@ -181,11 +183,11 @@ class ServerSession(QWidget):
 
 
     async def client_forwarder(self):
-        async for client_id, message in self.server.recv_stream():
+        async for client_id, message, timestamp in self.server.recv_stream():
             if message == self.server.STOP:
                 break
             chat: ServerChat = self.clients[client_id]
-            chat.display(message)
+            chat.display(message, timestamp)
     
     async def kick_client(self, client_id):
         if client_id in self.server.clients.keys():
@@ -201,7 +203,10 @@ class ServerSession(QWidget):
 
     async def cleanup(self):
         await self.tunnel.close()
-        self.finished.emit(self)
+        try:
+            self.finished.emit(self)
+        except:
+            pass
         
 class ServerManager(QWidget):
     finished = Signal(object)
@@ -295,13 +300,13 @@ class ServerChat(QWidget):
         self.main_layout.addLayout(self.input_layout)
         self.main_layout.addWidget(self.close_button)
 
-    def display(self, msg):
-        self.chat_display.append(f"[{self.client_name}] {msg}")
+    def display(self, msg, timestamp):
+        self.chat_display.append(f"[{self.client_name}:{timestamp}] {msg}")
 
     async def send_message(self):
         text = self.input_box.text()
         self.input_box.clear()
-        self.chat_display.append(f"[{self.app.username}] {text}")
+        self.chat_display.append(f"[{self.app.username}:{int(time.time())}] {text}")
         await self.server_session.server.send(self.client_id, text)
 
 class LoginPage(QWidget):
@@ -327,14 +332,14 @@ class LoginPage(QWidget):
         self.submit_login.setIcon(self.ok_icon)
         self.submit_login.setIconSize(QSize(32, 32))
         self.submit_login.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
-        self.submit_login.clicked.connect(self.handle_login)
+        self.submit_login.clicked.connect(lambda: asyncio.create_task(self.handle_login()))
 
         #Username and Password entry
         self.login_text_layout = QVBoxLayout()
         self.username_box = QLineEdit(placeholderText="Username")
         self.password_box = QLineEdit(placeholderText="Password")
         self.username_box.returnPressed.connect(self.password_box.setFocus)
-        self.password_box.returnPressed.connect(self.handle_login)
+        self.password_box.returnPressed.connect(lambda: asyncio.create_task(self.handle_login()))
         self.password_box.setEchoMode(QLineEdit.EchoMode.Password)
         self.login_text_layout.addWidget(self.username_box)
         self.login_text_layout.addWidget(self.password_box)
@@ -350,10 +355,10 @@ class LoginPage(QWidget):
         self.ui_layout.addLayout(self.input_layout)
         self.ui_layout.addWidget(self.make_act_btn)
     
-    def handle_login(self):
+    async def handle_login(self):
         #print(self.login_page_obj.username_box.text())
         #print(self.login_page_obj.password_box.text())
-        success, error = self.app.login(self.username_box.text(), self.password_box.text())
+        success, error = await self.app.login(self.username_box.text(), self.password_box.text())
         if success:
             self.username_box.clear()
             self.password_box.clear()
@@ -417,14 +422,16 @@ class DashboardPage(QWidget):
         
 
         self.back_btn = QPushButton("Logout")
-        self.back_btn.clicked.connect(self.handle_logout)
+        self.back_btn.clicked.connect(lambda: asyncio.create_task(self.handle_logout()))
         self.dash_widgets_layout.addWidget(self.back_btn)
     
-    def handle_logout(self):
-        self.app.logout()
+    async def handle_logout(self):
+        await self.app.logout()
+        self.main_window.cleanup_server_session()
+        self.main_window.cleanup_client_sessions()
         self.main_window.switch_page(MainWindowTPL.LOGIN_PAGE)
         self.account_information_list.clear()
-        print("Logged out!")
+        #print("Logged out!")
 
     def add_contact(self):
         success, error = self.app.add_contact(self.ka_username.text(), self.ka_public_key.text())
@@ -635,7 +642,7 @@ class ConfigureServerPage(QWidget):
         self.ui_layout.addStretch()
     
     def start_server(self):
-        print(f"server started on port {self.port_box.text()} with tunnel {self.tunnel_selector.currentData()}")
+        #print(f"server started on port {self.port_box.text()} with tunnel {self.tunnel_selector.currentData()}")
 
         self.main_window.server_session = ServerSession(self.app)
         asyncio.create_task(self.main_window.server_session.start_server(

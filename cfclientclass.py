@@ -1,22 +1,17 @@
 import asyncio
 import websockets
-import itertools
-import shlex
 import traceback
 import os
 import cfchatutils as cfu
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
-from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 from cryptography.hazmat.primitives import serialization
 from cryptography.exceptions import InvalidTag, InvalidSignature
 import json
+import time
 #import jblob
-from getpass import getpass
-from prompt_toolkit import PromptSession, print_formatted_text
 
 class Client:
     def __init__(self):
@@ -32,7 +27,7 @@ class Client:
     
     async def exit(self):
         self.stop_event.set()
-        await self.log_event("Client Exiting")
+        #await self.log_event("Client Exiting")
         await self.inbound.put(self.STOP)
         await self.outbound.put(self.STOP)
         await self.inbound_usr.put(self.STOP)
@@ -53,7 +48,7 @@ class Client:
             try:
                 await websocket.send(json.dumps(data))
             except websockets.ConnectionClosed:
-                await self.log_event("Connection to server closed")
+                #await self.log_event("Connection to server closed")
                 await self.exit()
                 break
 
@@ -70,7 +65,7 @@ class Client:
                 # forced shutdown
                 break
             except websockets.ConnectionClosed:
-                await self.log_event('Server disconnect')
+                #await self.log_event('Server disconnect')
                 await self.exit()
                 break
             except Exception as e:
@@ -79,25 +74,31 @@ class Client:
     
     async def send(self,cmd):
         try:
-            await self.encryption.put(("usr", cmd))
+            data = {
+                "timestamp": int(time.time()),
+                "msg": cmd
+            }
+            await self.encryption.put(("usr", json.dumps(data).encode('utf-8')))
         except websockets.ConnectionClosed:
             await self.log_event("Server disconnected")
 
     async def recv(self):
-        usr_msg = await self.inbound_usr.get()
-        if usr_msg == self.STOP:
+        recv_packet = await self.inbound_usr.get()
+        msg_json = json.loads(recv_packet.decode('utf-8'))
+        if recv_packet == self.STOP:
             return None
         else:
-            return usr_msg
-
+            return msg_json['msg'], msg_json['timestamp']
+        
     async def recv_stream(self):
         while not self.stop_event.is_set():
-            usr_msg = await self.inbound_usr.get()
-            if usr_msg == self.STOP:
+            recv_packet = await self.inbound_usr.get()
+            msg_json = json.loads(recv_packet.decode('utf-8'))
+            if recv_packet == self.STOP:
                 break
-            yield usr_msg
+            yield msg_json['msg'], msg_json['timestamp']
     
-    async def client_encryption(self, server_id: str, ed_private_key):
+    async def client_encryption(self, server_id: str, ed_private_key: Ed25519PrivateKey):
         try:
             #send server the public key
             my_private_key = X25519PrivateKey.generate()
@@ -111,14 +112,14 @@ class Client:
                 ).hex()
                 })
 
-            #print_formatted_text('Beginning Encryption Loop')
+            #print('Beginning Encryption Loop')
             while not self.stop_event.is_set():
-                #print_formatted_text('Awaiting messages')
+                #print('Awaiting messages')
                 msg_type, data = await self.encryption.get()
                 if msg_type == self.STOP:
                     continue
                 
-                #print_formatted_text(f'{msg_type} {data}')
+                #print(f'{msg_type} {data}')
 
                 if msg_type == 'server' and data['type'] == 'pub_key':
                     peer_public_key = X25519PublicKey.from_public_bytes(bytes.fromhex(data['contents']))
@@ -136,8 +137,7 @@ class Client:
                             format=serialization.PublicFormat.Raw
                         ) +
                         random
-                    )
-                    #await self.log_event(f"challenge i made (server+client+random) {challenge.hex()}")               
+                    )            
                     signature = ed_private_key.sign(challenge)
 
                     await self.outbound.put({
@@ -146,7 +146,8 @@ class Client:
                         'signature': signature.hex()
                         })
                     
-                    #await self.log_event(f"Signature i made {signature.hex()}")
+                    #await self.log_event(f"challenge i made as client (server+client+random) {challenge.hex()}")   
+                    #await self.log_event(f"Signature i made as client {signature.hex()}")
                     
                     #Wait until message with signature is recieved
                     while 1:
@@ -182,7 +183,7 @@ class Client:
                         await self.exit()
                         continue
 
-                    await self.log_event('Server Identity Verified')
+                    #await self.log_event('Server Identity Verified')
 
                     #sets up server_key (sent by server), and client_key (sent by client)
                     #region
@@ -210,17 +211,17 @@ class Client:
                     del root_key
                     #endregion
 
-                    #print_formatted_text(shared_secrect.hex())
+                    #print(shared_secrect.hex())
 
                 elif msg_type == 'usr':
-                    #print_formatted_text('usr sending msg')
-                    nonce, message = cfu.encrypt(client_key, data.encode('utf-8'))
+                    #print('usr sending msg')
+                    nonce, message = cfu.encrypt(client_key, data)
 
                     #Ratchet the key
-                    #print_formatted_text('ratcheting key')
+                    #print('ratcheting key')
                     client_key = cfu.ratchet(client_key, b'client')
 
-                    #print_formatted_text(f'Sent server {message.hex()}')
+                    #print(f'Sent server {message.hex()}')
                     await self.outbound.put({
                         'type': 'enc_msg',
                         'nonce': nonce.hex(),
@@ -234,7 +235,7 @@ class Client:
                     nonce = bytes.fromhex(data['nonce'])
                     contents = bytes.fromhex(data['contents'])
 
-                    message = cfu.decrypt(server_key, nonce, contents).decode('utf-8')
+                    message = cfu.decrypt(server_key, nonce, contents)
                     server_key = cfu.ratchet(server_key, b'server')
 
                     await self.inbound_usr.put(message)
@@ -251,26 +252,32 @@ class Client:
 
         self.server_id = server_id
 
-        async with websockets.connect(url) as websocket:
-            
-            tasks = [
-                asyncio.create_task(self.client_reciever(websocket)),
-                asyncio.create_task(self.client_router(websocket)),
-                asyncio.create_task(self.client_encryption(server_id, ed_private_key)),
-            ]
+        try:
+            async with websockets.connect(url) as websocket:
+                
+                tasks = [
+                    asyncio.create_task(self.client_reciever(websocket)),
+                    asyncio.create_task(self.client_router(websocket)),
+                    asyncio.create_task(self.client_encryption(server_id, ed_private_key)),
+                ]
 
-            try:
-                await asyncio.wait(
-                    tasks, 
-                    return_when=asyncio.FIRST_EXCEPTION
-                )
-            finally:
-                self.stop_event.set()  # signal all tasks to stop
-                for t in tasks:
-                    t.cancel()
-                await asyncio.gather(*tasks, return_exceptions=True)
-                await websocket.close()
+                try:
+                    await asyncio.wait(
+                        tasks, 
+                        return_when=asyncio.FIRST_EXCEPTION
+                    )
+                finally:
+                    self.stop_event.set()  # signal all tasks to stop
+                    for t in tasks:
+                        t.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                    await websocket.close()
+
+        except (OSError, websockets.InvalidURI, websockets.InvalidHandshake) as e:
+            print(f"Websockets connection failed with error {e}")
+            self.stop_event.set()
+            return
 
     async def log_event(self, event: str):
-        print_formatted_text(event)
+        print(event)
         self.log.append(event)

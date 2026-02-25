@@ -1,5 +1,6 @@
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 from cryptography.exceptions import InvalidTag
+from xxhash import xxh64
 import os
 import json
 
@@ -10,6 +11,7 @@ class JBlob:
         self.opt_data = {}
         self.nonce = None
         self.encrypted = None
+        self.hash: xxh64 = None
 
     def decrypt(self, key: bytes):
         aead = ChaCha20Poly1305(key)
@@ -32,13 +34,22 @@ class JBlob:
         aead = ChaCha20Poly1305(key)
         nonce = os.urandom(12)
 
-        blob = json.dumps(self.data).encode('utf-8')
+        blob = json.dumps(self.data, sort_keys=True).encode('utf-8')
+        self.hash = xxh64(blob).hexdigest()
         encrypted_blob = aead.encrypt(nonce, blob, associated_data=None)
+        del blob
 
         self.nonce = nonce
         self.encrypted = encrypted_blob
 
         return nonce, encrypted_blob
+    
+    def is_dirty(self) -> bool:
+        current_hash = xxh64(json.dumps(self.data, sort_keys=True).encode('utf-8')).hexdigest()
+        if current_hash == self.hash:
+            return False
+        else:
+            return True
     
     def load(self, filename=None):
         if self.filename != None:
@@ -65,7 +76,6 @@ class JBlob:
             self.filename = filename
 
         contents = {"opt_data": self.opt_data, "nonce": self.nonce.hex(), "encrypted": self.encrypted.hex()}
-        
         try:
             with open(filename, 'w') as f:
                 json.dump(contents, f)

@@ -1,22 +1,18 @@
 import asyncio
 import websockets
 import itertools
-import shlex
 import traceback
 import os
 import cfchatutils as cfu
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
-from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 from cryptography.hazmat.primitives import serialization
 from cryptography.exceptions import InvalidTag, InvalidSignature
 import json
+import time
 #import jblob
-from getpass import getpass
-from prompt_toolkit import PromptSession, print_formatted_text
 
 class Server:
     def __init__(self):
@@ -35,7 +31,7 @@ class Server:
         self.join_queue = asyncio.Queue()
 
     async def log_event(self, event: str):
-        print_formatted_text(event)
+        print(event)
         self.log.append(event) 
 
     async def handler(self, websocket):
@@ -43,7 +39,7 @@ class Server:
         websocket.client_id = client_id
         self.clients[client_id] = websocket
         self.client_keys[client_id]= {'tunnel_established': False}
-        await self.log_event(f"Client {client_id} connected!")
+        #await self.log_event(f"Client {client_id} connected!")
 
         try:
             async for message in websocket:
@@ -51,7 +47,7 @@ class Server:
         except websockets.ConnectionClosed:
             pass
         finally:
-            await self.log_event(f"Client {client_id} disconnected!")
+            #await self.log_event(f"Client {client_id} disconnected!")
             self.clients.pop(client_id, None)
             self.client_names.pop(client_id, None)
             await self.join_queue.put(("leave", client_id, None))
@@ -70,7 +66,7 @@ class Server:
         #await self.log_event(self.clients)
 
         if websocket:
-            await self.log_event(f"Kicking client {client_id}: {reason}")
+            #await self.log_event(f"Kicking client {client_id}: {reason}")
             try:
                 await asyncio.wait_for(websocket.close(code=1008, reason=reason), timeout=1.0)  # 1008 = policy violation
             except Exception as e:
@@ -101,39 +97,46 @@ class Server:
     
     async def send(self, client_id, cmd):
         try:
-            await self.encryption.put(("usr", client_id, cmd))
+            data = {
+                "timestamp": int(time.time()),
+                "msg": cmd
+            }
+            await self.encryption.put(("usr", client_id, json.dumps(data).encode('utf-8')))
         except websockets.ConnectionClosed:
             await self.log_event("Client disconnected")
 
     async def recv(self):
-        usr_msg = await self.inbound_usr.get()
-        if usr_msg == self.STOP:
+        client_id, recv_packet = await self.inbound_usr.get()
+        msg_json = json.loads(recv_packet.decode('utf-8'))
+        if recv_packet == self.STOP:
             return None
         else:
-            return usr_msg
+            return client_id, msg_json['msg'], msg_json['timestamp']
 
     async def recv_stream(self):
         while not self.stop_event.is_set():
-            usr_msg = await self.inbound_usr.get()
-            if usr_msg == self.STOP:
+            client_id, recv_packet = await self.inbound_usr.get()
+            msg_json = json.loads(recv_packet.decode('utf-8'))
+            if recv_packet == self.STOP:
                 break
-            yield usr_msg
+            yield client_id, msg_json['msg'], msg_json['timestamp']
 
     async def server_encryption(self, stop_server: asyncio.Event, ed_private_key: Ed25519PrivateKey, known_ids: dict):
         try:
             while not stop_server.is_set():
-                #print_formatted_text('Awaiting messages')
+                #print('Awaiting messages')
                 msg_type, client_id, data = await self.encryption.get()
-                #print_formatted_text(f'{msg_type} {client_id} {data}')
+                #await self.log_event(f'Type {msg_type} from {client_id} with {data} and status {self.client_keys.get(client_id).get('status')}')
                 if msg_type == self.STOP:
                     continue
 
                 if msg_type == "client" and data['type'] == 'pub_key':
+                    #await self.log_event(f"Client {client_id} public key recieved")
                     my_private_key = X25519PrivateKey.generate()
                     my_public_key = my_private_key.public_key()
                     peer_public_key = X25519PublicKey.from_public_bytes(bytes.fromhex(data['contents']))
 
-                    #print_formatted_text("sending public key")
+                    #print("sending public key")
                     await self.outbound.put((client_id, {
                         'type': 'pub_key',
                         'contents': my_public_key.public_bytes(
@@ -142,7 +145,7 @@ class Server:
                         ).hex()
                         }))
                     
-                    #print_formatted_text("sent public key")
+                    #print("sent public key")
                     shared_secrect  = my_private_key.exchange(peer_public_key)
 
                     #identity verification
@@ -159,8 +162,6 @@ class Server:
                         random
                     )
 
-                    #await self.log_event(f"challenge i made (server+client+random) {challenge.hex()}")
-
                     signature = ed_private_key.sign(challenge)
 
                     await self.outbound.put((client_id, {
@@ -169,31 +170,38 @@ class Server:
                         'signature': signature.hex()
                         }))
                     
+                    #Dump all necessary information for second packet
+                    self.client_keys[client_id]['shared_secret'] = shared_secrect
+                    self.client_keys[client_id]['my_pub'] = my_public_key.public_bytes(
+                            encoding=serialization.Encoding.Raw,
+                            format=serialization.PublicFormat.Raw
+                        )
+                    self.client_keys[client_id]['peer_pub'] = peer_public_key.public_bytes(
+                            encoding=serialization.Encoding.Raw,
+                            format=serialization.PublicFormat.Raw
+                        )
+                    self.client_keys[client_id]['my_chall'] = challenge
+                    self.client_keys[client_id]['my_sig'] = signature
+                    self.client_keys[client_id]['status'] = 'waiting_for_peer_sig'
                     #await self.log_event(f"Signature i made {signature.hex()}")
+
+                    #await self.log_event(f"Waiting for client {client_id}'s signature, sent mine")
+                
+                elif msg_type == 'client' and data['type'] == 'signed' and self.client_keys[client_id]['status'] == 'waiting_for_peer_sig':
+                    #await self.log_event(f"Client {client_id} signature recieved")
                     
                     #Wait until message with signature is recieved
-                    while 1:
-                        ed_msg_type, ed_client_id, ed_data = await self.encryption.get()
-                        if ed_client_id == client_id and ed_data['type'] == 'signed':
-                            break
-                        await self.encryption.put((ed_msg_type, ed_client_id, ed_data))
                     
-                    random = bytes.fromhex(ed_data['random'])
-                    signature = bytes.fromhex(ed_data['signature'])
+                    random = bytes.fromhex(data['random'])
+                    signature = bytes.fromhex(data['signature'])
 
                     challenge = (
-                        my_public_key.public_bytes(
-                            encoding=serialization.Encoding.Raw,
-                            format=serialization.PublicFormat.Raw
-                        ) + 
-                        peer_public_key.public_bytes(
-                            encoding=serialization.Encoding.Raw,
-                            format=serialization.PublicFormat.Raw
-                        ) +
+                        self.client_keys[client_id]['my_pub'] +
+                        self.client_keys[client_id]['peer_pub'] +
                         random
                     )
 
-                    #await self.log_event(f"challenge server made (server+client+random) {challenge.hex()}")
+                    #await self.log_event(f"challenge client made (server+client+crandom) {challenge.hex()}")
                     #await self.log_event(f"Signature i recieved {signature.hex()}")
 
                     matched_us = None
@@ -207,12 +215,13 @@ class Server:
                                 unpacked_key = Ed25519PublicKey.from_public_bytes(bytes.fromhex(key))
                             except:
                                 await self.log_event("Key could not be unpacked!")
+                                continue
                             try:
                                 unpacked_key.verify(signature, challenge)
-                                matched_us = username
-                                matched_key = unpacked_key
                             except InvalidSignature:
-                                pass
+                                continue
+                            matched_us = username
+                            matched_key = unpacked_key
                     
                     if not matched_us:
                         #await self.log_event('No match found, kicking client...')
@@ -220,13 +229,16 @@ class Server:
                         del shared_secrect
                         continue
                     else:
-                        await self.log_event(f'Client {client_id} identified as {matched_us}, type kick {client_id} if unexpected!')
+                        #await self.log_event(f'Client {client_id} identified as {matched_us}, type kick {client_id} if unexpected!')
+                        pass
 
                     self.client_names[client_id] = matched_us
                     await self.join_queue.put(("join", client_id, matched_us))
 
                     #sets up server_key (sent by server), and client_key (sent by client)
                     #region
+                    shared_secrect = self.client_keys[client_id]['shared_secret']
+
                     root_key = HKDF(
                         algorithm=hashes.SHA256(),
                         salt=None,
@@ -248,41 +260,46 @@ class Server:
                         length=32,
                     ).derive(root_key)
                     
+                    #print(shared_secrect.hex())
                     del root_key
+                    del shared_secrect
                     #endregion
 
                     self.client_keys[client_id]['tunnel_established'] = True
-
-                    #print_formatted_text(shared_secrect.hex())
-                    del shared_secrect
+                    self.client_keys[client_id]['status'] = 'encrypted'
+                    self.client_keys[client_id]['shared_secret'] = None
+                    self.client_keys[client_id]['my_chall'] = None
+                    self.client_keys[client_id]['my_sig'] = None
+                    self.client_keys[client_id]['my_pub'] = None
+                    self.client_keys[client_id]['peer_pub'] = None
                 
                 elif msg_type == 'usr' and self.client_keys[client_id]['tunnel_established']:
-                    #print_formatted_text('usr sending msg')
+                    #print('usr sending msg')
                     server_key = self.client_keys[client_id]['server_key']
-                    nonce, message = cfu.encrypt(server_key, data.encode('utf-8'))
+                    nonce, message = cfu.encrypt(server_key, data)
 
-                    #print_formatted_text('ratcheting key')
+                    #print('ratcheting key')
                     #Ratchet the key
                     self.client_keys[client_id]['server_key'] = cfu.ratchet(server_key, b'server')
                     del server_key
 
-                    #print_formatted_text(f'Sent client {client_id} {message.hex()}')
+                    #print(f'Sent client {client_id} {message.hex()}')
                     await self.outbound.put((client_id,{
                         'type': 'enc_msg',
                         'nonce': nonce.hex(),
                         'contents': message.hex(),
                     }))
                 
-                elif msg_type == 'client' and data['type'] == 'enc_msg':
+                elif msg_type == 'client' and data['type'] == 'enc_msg' and self.client_keys[client_id]['tunnel_established']:
                     #If its a message send to user
                     #Decrypt Message
                     client_key = self.client_keys[client_id]['client_key']
                     nonce = bytes.fromhex(data['nonce'])
                     contents = bytes.fromhex(data['contents'])
 
-                    #print_formatted_text(f'Recieved {contents} from client {client_id}')
+                    #print(f'Recieved {contents} from client {client_id}')
 
-                    message = cfu.decrypt(client_key, nonce, contents).decode('utf-8')
+                    message = cfu.decrypt(client_key, nonce, contents)
                     self.client_keys[client_id]['client_key'] = cfu.ratchet(client_key, b'client')
                     del client_key
 
@@ -311,7 +328,7 @@ class Server:
         cfu.empty_queue(self.encryption)
 
         async with websockets.serve(self.handler, "localhost", port):
-            await self.log_event(f"Server running on ws://localhost:{port}")
+            #await self.log_event(f"Server running on ws://localhost:{port}")
 
             tasks = [
                 asyncio.create_task(self.server_router(self.stop_event)),
