@@ -1,8 +1,8 @@
-from PySide6.QtCore import Qt, QSize, Signal
+from PySide6.QtCore import Qt, QSize, Signal, QTimer
 from PySide6.QtWidgets import (QApplication, QLabel, QMainWindow, QPushButton, QVBoxLayout, QHBoxLayout, QWidget, QLineEdit, 
                                QTextBrowser,QStyle, QSizePolicy, QStackedWidget, QListWidget, QListWidgetItem, QComboBox,
                                QTabWidget)
-from PySide6.QtGui import QColor, QPalette, QIcon
+from PySide6.QtGui import QIcon, QClipboard, QGuiApplication
 import PySide6.QtSvg
 
 from tunnelmanager import Tunnel
@@ -15,7 +15,7 @@ import asyncio
 import sys
 import os
 import time
-import datetime
+from datetime import datetime
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 from cryptography.exceptions import InvalidSignature
@@ -88,6 +88,12 @@ class ClientSession(QWidget):
     
     async def start_client(self, url, server_id):
         self.client = cfclientclass.Client()
+        self.server_id = server_id
+        self.app.account.data.setdefault("chat_histories", {}).setdefault(server_id, {}).setdefault("messages", {})
+
+        self.messages = self.app.account.data["chat_histories"][server_id]["messages"]
+
+        self.load_messages()
 
         try:
             client_task = asyncio.create_task(self.client.start_client(url, server_id, self.app.private_key))
@@ -103,17 +109,89 @@ class ClientSession(QWidget):
             self.cleanup()
 
     async def client_display(self):
-        async for msg, timestamp in self.client.recv_stream():
+        async for msg, unix_timestamp in self.client.recv_stream():
             if msg == self.client.STOP:
                 break
+            
+            timestamp = datetime.fromtimestamp(unix_timestamp, self.app.tz)
+            formatted_timestamp = timestamp.strftime("%I:%M:%S %p")
+            self.chat_display.append(f"[{self.server_name} {formatted_timestamp}] {msg}")
 
-            self.chat_display.append(f"[{self.server_name}:{timestamp}] {msg}")
+            next_id = int(max(self.messages.keys(), default=0)) + 1
+            self.messages[next_id] = {
+                "timestamp": unix_timestamp,
+                "from": "peer",
+                "content": msg
+            }
 
     async def send_message(self):
         text = self.input_box.text()
         self.input_box.clear()
-        self.chat_display.append(f"[{self.app.username}:{int(time.time())}] {text}")
+
+        timestamp = datetime.fromtimestamp(time.time(), self.app.tz)
+        formatted_timestamp = timestamp.strftime("%I:%M:%S %p")
+        self.chat_display.append(f"[{self.app.username} {formatted_timestamp}] {text}")
+        next_id = int(max(self.messages.keys(), default=0)) + 1
+        self.messages[next_id] = {
+            "timestamp": time.time(),
+            "from": "you",
+            "content": text
+        }
         await self.client.send(text)
+    
+    def load_messages(self):
+        for msg_id, msg in sorted(self.messages.items(), key=lambda x: int(x[0])):
+            timestamp = datetime.fromtimestamp(int(msg["timestamp"]), self.app.tz)
+            formatted_timestamp = timestamp.strftime("%I:%M:%S %p")
+
+            if msg["from"] == "you":
+                self.chat_display.append(f"[{self.app.username} {formatted_timestamp}] {msg["content"]}")
+            else:
+                self.chat_display.append(f"[{self.server_name} {formatted_timestamp}] {msg["content"]}")
+
+    def cleanup(self):
+        self.finished.emit(self)
+
+class HistorySession(QWidget):
+    finished = Signal(object)
+    
+    def __init__(self, app: Application, name, key, parent=None):
+        super().__init__(parent)
+        self.client = None
+        self.app = app
+        self.contact_id = key
+        self.contact_name = name
+
+        self.app.account.data.setdefault("chat_histories", {}).setdefault(self.contact_id, {}).setdefault("messages", {})
+        self.messages = self.app.account.data["chat_histories"][self.contact_id]["messages"]
+
+        self.setMaximumWidth(600)
+
+        self.main_layout = QVBoxLayout()
+        self.main_layout.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        self.setLayout(self.main_layout)
+
+        self.chat_display = QTextBrowser()
+        self.chat_display.setReadOnly(True)
+
+        self.close_button = QPushButton("Exit Session")
+        self.close_button.clicked.connect(self.cleanup)
+
+        self.main_layout.addWidget(self.chat_display)
+        self.main_layout.addWidget(self.close_button)
+
+        self.load_messages()
+    
+    
+    def load_messages(self):
+        for msg_id, msg in sorted(self.messages.items(), key=lambda x: int(x[0])):
+            timestamp = datetime.fromtimestamp(int(msg["timestamp"]), self.app.tz)
+            formatted_timestamp = timestamp.strftime("%I:%M:%S %p")
+
+            if msg["from"] == "you":
+                self.chat_display.append(f"[{self.app.username} {formatted_timestamp}] {msg["content"]}")
+            else:
+                self.chat_display.append(f"[{self.contact_name} {formatted_timestamp}] {msg["content"]}")
 
     def cleanup(self):
         self.finished.emit(self)
@@ -138,6 +216,7 @@ class ServerSession(QWidget):
     async def start_server(self, port, tunnel_type=Tunnel.disabled):
         self.server = cfserverclass.Server()
         self.tunnel = Tunnel()
+        self.port = port
         await self.tunnel.open_tunnel(tunnel_type, port, self.app.base_dir)
 
         #print("Tunnel Opened")
@@ -220,10 +299,32 @@ class ServerManager(QWidget):
         self.setLayout(self.main_layout)
         self.main_layout.setAlignment(Qt.AlignmentFlag.AlignHCenter)
 
+        self.clipboard = QGuiApplication.clipboard()
+
         self.label = QLabel("Server Manager Beep Boop")
+
+        self.url_copier = QHBoxLayout()
         self.url_label = QLabel(f"Tunnel URL: {self.server_session.tunnel.url}")
-        self.url_label.setWordWrap(True)
+        self.url_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.url_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.copy_button_feedback = QLabel("")
+        self.copy_button_feedback.setStyleSheet("color: green;")
+
+        copy_btn_icon = QIcon(os.path.join(self.server_session.app.base_dir, "resources", "icons", "copy.svg"))
+        self.copy_button = QPushButton("")
+        self.copy_button.setIcon(copy_btn_icon)
+        self.copy_button.setIconSize(QSize(16,16))
+        self.copy_button.clicked.connect(
+            lambda: (
+                self.clipboard.setText(self.server_session.tunnel.url),
+                self.copy_button_feedback.setText("Copied!"),
+                QTimer.singleShot(1000, lambda: self.copy_button_feedback.clear())
+            )
+        )
+
+        self.url_copier.addWidget(self.url_label, 1)
+        self.url_copier.addWidget(self.copy_button)
+
         #on epstein :skull:
         self.client_list = QListWidget()
         self.kick_button = QPushButton("Kick Selected Client")
@@ -238,7 +339,8 @@ class ServerManager(QWidget):
         self.shutdown_button.clicked.connect(lambda: asyncio.create_task(server_session.shutdown()))
 
         self.main_layout.addWidget(self.label)
-        self.main_layout.addWidget(self.url_label)
+        self.main_layout.addLayout(self.url_copier)
+        self.main_layout.addWidget(self.copy_button_feedback)
         self.main_layout.addWidget(self.client_list)
         self.main_layout.addWidget(self.kick_button)
         self.main_layout.addWidget(self.shutdown_button)
@@ -263,6 +365,9 @@ class ServerChat(QWidget):
         self.server_session = server_session
         self.client_id = client_id
         self.client_name = self.server_session.server.client_names[client_id]
+        client_pub_key = self.app.account.data["known_ids"][self.client_name]
+        self.app.account.data.setdefault("chat_histories", {}).setdefault(client_pub_key, {}).setdefault("messages", {})
+        self.messages = self.app.account.data["chat_histories"][client_pub_key]["messages"]
 
         self.setMaximumWidth(600)
 
@@ -300,14 +405,44 @@ class ServerChat(QWidget):
         self.main_layout.addLayout(self.input_layout)
         self.main_layout.addWidget(self.close_button)
 
-    def display(self, msg, timestamp):
-        self.chat_display.append(f"[{self.client_name}:{timestamp}] {msg}")
+        self.load_messages()
+
+    def display(self, msg, unix_timestamp):
+        timestamp = datetime.fromtimestamp(unix_timestamp, self.app.tz)
+        formatted_timestamp = timestamp.strftime("%I:%M:%S %p")
+
+        self.chat_display.append(f"[{self.client_name} {formatted_timestamp}] {msg}")
+        next_id = int(max(self.messages.keys(), default=0)) + 1
+        self.messages[next_id] = {
+            "timestamp": unix_timestamp,
+            "from": "peer",
+            "content": msg
+        }
 
     async def send_message(self):
         text = self.input_box.text()
         self.input_box.clear()
-        self.chat_display.append(f"[{self.app.username}:{int(time.time())}] {text}")
+
+        timestamp = datetime.fromtimestamp(time.time(), self.app.tz)
+        formatted_timestamp = timestamp.strftime("%I:%M:%S %p")
+        self.chat_display.append(f"[{self.app.username} {formatted_timestamp}] {text}")
+        next_id = int(max(self.messages.keys(), default=0)) + 1
+        self.messages[next_id] = {
+            "timestamp": time.time(),
+            "from": "you",
+            "content": text
+        }
         await self.server_session.server.send(self.client_id, text)
+
+    def load_messages(self):
+        for msg_id, msg in sorted(self.messages.items(), key=lambda x: int(x[0])):
+            timestamp = datetime.fromtimestamp(int(msg["timestamp"]), self.app.tz)
+            formatted_timestamp = timestamp.strftime("%I:%M:%S %p")
+
+            if msg["from"] == "you":
+                self.chat_display.append(f"[{self.app.username} {formatted_timestamp}] {msg["content"]}")
+            else:
+                self.chat_display.append(f"[{self.client_name} {formatted_timestamp}] {msg["content"]}")
 
 class LoginPage(QWidget):
         
@@ -380,45 +515,89 @@ class DashboardPage(QWidget):
         self.main_window = parent
         self.app: Application = parent.app
 
+        self.clipboard = QGuiApplication.clipboard()
+
         self.dash_layout = QVBoxLayout()
         self.setLayout(self.dash_layout)
         self.dash_widgets = QWidget()
         self.dash_layout.addWidget(self.dash_widgets)
         self.dash_widgets_layout = QVBoxLayout(self.dash_widgets)
-        self.dash_lists_layout = QHBoxLayout()
+        self.dash_panels = QHBoxLayout()
 
         #Known Accounts List
         #Layouts
-        self.ka_list_layout = QVBoxLayout()
-        self.ka_buttons = QHBoxLayout()
-        self.ka_text_input = QHBoxLayout()
+        self.list_layout = QVBoxLayout()
+        self.buttons = QHBoxLayout()
+        self.text_input = QHBoxLayout()
 
-        self.ka_username = QLineEdit(placeholderText="Username")
-        self.ka_public_key = QLineEdit(placeholderText="Public Key")
-        self.ka_text_input.addWidget(self.ka_username)
-        self.ka_text_input.addWidget(self.ka_public_key)
+        self.username = QLineEdit(placeholderText="Username")
+        self.public_key_text = QLineEdit(placeholderText="Public Key")
+        self.text_input.addWidget(self.username)
+        self.text_input.addWidget(self.public_key_text)
 
-        self.ka_add_btn = QPushButton("Add Contact")
-        self.ka_remove_btn = QPushButton("Remove Contact")
-        self.ka_add_btn.clicked.connect(self.add_contact)
-        self.ka_remove_btn.clicked.connect(self.remove_contact)
-        self.ka_buttons.addWidget(self.ka_add_btn)
-        self.ka_buttons.addWidget(self.ka_remove_btn)
+        self.add_btn = QPushButton("Add Contact")
+        self.remove_btn = QPushButton("Remove Contact")
+        self.add_btn.clicked.connect(self.add_contact)
+        self.remove_btn.clicked.connect(self.remove_contact)
+        self.buttons.addWidget(self.add_btn)
+        self.buttons.addWidget(self.remove_btn)
 
-        self.ka_list = QListWidget()
+        self.list = QListWidget()
+        self.list.itemClicked.connect(
+            lambda item: (
+                self.public_key_text.setText(item.text().split(": ")[1]),
+                self.username.setText(item.text().split(": ")[0])
+            )
+        )
 
-        self.ka_list_layout.addWidget(self.ka_list)
-        self.ka_list_layout.addLayout(self.ka_text_input)
-        self.ka_list_layout.addLayout(self.ka_buttons)
+        self.open_history_button = QPushButton("Open History")
+        self.open_history_button.clicked.connect(self.open_history)
+        self.delete_history_button = QPushButton("Delete History")
+        self.delete_history_button.clicked.connect(
+            lambda: self.app.account.data.setdefault("chat_histories", {}).setdefault(self.app.account.data["known_ids"][self.username.text()], {}).setdefault("messages", {}).clear()
+        )
+        
+
+        self.list_layout.addWidget(self.list)
+        self.list_layout.addLayout(self.text_input)
+        self.list_layout.addLayout(self.buttons)
+        self.list_layout.addWidget(self.open_history_button)
+        self.list_layout.addWidget(self.delete_history_button)
 
         #Account Info
-        self.account_information_list = QTextBrowser()
-        self.account_information_list.setReadOnly(True)
+        self.configuration_layout = QVBoxLayout()
+        self.username_label = QLabel("")
+        self.configuration_layout.addWidget(self.username_label)
+        
+        self.public_key_copier = QHBoxLayout()
+        self.public_key_label = QLabel("")
+        self.public_key_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.copy_button_feedback = QLabel("")
+        self.copy_button_feedback.setStyleSheet("color: green;")
 
-        self.dash_lists_layout.addWidget(self.account_information_list)
-        self.dash_lists_layout.addLayout(self.ka_list_layout)
+        copy_btn_icon = QIcon(os.path.join(self.app.base_dir, "resources", "icons", "copy.svg"))
+        self.copy_button = QPushButton("")
+        self.copy_button.setIcon(copy_btn_icon)
+        self.copy_button.setIconSize(QSize(16,16))
+        self.copy_button.clicked.connect(
+            lambda: (
+                self.clipboard.setText(self.app.public_key.public_bytes(encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw).hex()),
+                self.copy_button_feedback.setText("Copied!"),
+                QTimer.singleShot(1000, lambda: self.copy_button_feedback.clear())
+            )
+        )
 
-        self.dash_widgets_layout.addLayout(self.dash_lists_layout)
+        self.public_key_copier.addWidget(self.public_key_label, 1)
+        self.public_key_copier.addWidget(self.copy_button)
+
+        self.configuration_layout.addLayout(self.public_key_copier)
+        self.configuration_layout.addWidget(self.copy_button_feedback)
+        self.configuration_layout.addStretch()
+
+        self.dash_panels.addLayout(self.configuration_layout)
+        self.dash_panels.addLayout(self.list_layout)
+
+        self.dash_widgets_layout.addLayout(self.dash_panels)
         
 
         self.back_btn = QPushButton("Logout")
@@ -429,25 +608,26 @@ class DashboardPage(QWidget):
         await self.app.logout()
         self.main_window.cleanup_server_session()
         self.main_window.cleanup_client_sessions()
+        self.username_label.clear()
+        self.public_key_label.clear()
         self.main_window.switch_page(MainWindowTPL.LOGIN_PAGE)
-        self.account_information_list.clear()
         #print("Logged out!")
 
     def add_contact(self):
-        success, error = self.app.add_contact(self.ka_username.text(), self.ka_public_key.text())
+        success, error = self.app.add_contact(self.username.text(), self.public_key_text.text())
         if success:
-            self.reload_contacts(self.ka_list)
-            self.ka_username.clear()
-            self.ka_public_key.clear()
+            self.reload_contacts(self.list)
+            self.username.clear()
+            self.public_key_text.clear()
         else:
             print(f"ID could not be added: {error}")
     
     def remove_contact(self):
-        success, error = self.app.remove_contact(self.ka_username.text())
+        success, error = self.app.remove_contact(self.username.text())
         if success:
-            self.reload_contacts(self.ka_list)
-            self.ka_username.clear()
-            self.ka_public_key.clear()
+            self.reload_contacts(self.list)
+            self.username.clear()
+            self.public_key_text.clear()
         else:
             print(f"ID could not be removed: {error}")
 
@@ -458,18 +638,39 @@ class DashboardPage(QWidget):
             list.addItem(f"{key}: {self.app.account.data["known_ids"][key]}")
         list.setUpdatesEnabled(True)
 
+    def open_history(self):
+        if not self.username.text() in self.app.account.data["known_ids"]:
+            #print("name not found")
+            return
+
+        history_session = HistorySession(self.app, self.username.text(), self.public_key_text.text())
+
+        item = QListWidgetItem(f"{self.username.text()} [H]")
+        item.setData(Qt.ItemDataRole.UserRole, history_session)
+
+        self.main_window.sidebar_list.addItem(item)
+
+        self.main_window.pages.addWidget(history_session)
+        self.main_window.pages.setCurrentWidget(history_session)
+        history_session.finished.connect(lambda: self.cleanup_history_session(history_session))
+        
+    def cleanup_history_session(self, session: ClientSession):
+        for i in range(self.main_window.sidebar_list.count()):
+            item = self.main_window.sidebar_list.item(i)
+            if item.data(Qt.ItemDataRole.UserRole) == session:
+                self.main_window.sidebar_list.takeItem(i)
+        
+        self.main_window.pages.removeWidget(session)
+        session.deleteLater()
+        self.main_window.switch_page(MainWindowTPL.DASHBOARD_PAGE)
+
     def reset(self):
-        self.account_information_list.clear()
-        self.account_information_list.append(f"Username: {self.app.username}")
-        self.account_information_list.append(f"User Data Key: {self.app.user_data_key.hex()}")
-        self.account_information_list.append(f"User Private Key: {self.app.private_key.private_bytes(encoding=serialization.Encoding.Raw, 
-                                                                                                                                format=serialization.PrivateFormat.Raw, 
-                                                                                                                                encryption_algorithm=serialization.NoEncryption()).hex()}")
-        self.account_information_list.append(f"User Public Key: {self.app.public_key.public_bytes(encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw).hex()}")
-        self.account_information_list.append(f"Base Directory: {self.app.base_dir}")
-        self.ka_username.clear()
-        self.ka_public_key.clear()
-        self.reload_contacts(self.ka_list)
+        self.username_label.setText(f"Username: {self.app.username}")
+        self.public_key_label.setText(f"ID: {self.app.public_key.public_bytes(encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw).hex()}")
+        self.copy_button_feedback.clear()
+        self.username.clear()
+        self.public_key_text.clear()
+        self.reload_contacts(self.list)
 
 class MakeAccountPage(QWidget):
 

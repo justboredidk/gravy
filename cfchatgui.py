@@ -23,14 +23,12 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey,
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
 import json
+from datetime import datetime
 
 #TO_DO
-#Finish dashboard and account managed features (proxy, histories, etc)
-#Make chat functional
-#Add multiclient, multiserver
-#Intgrate proxy
+#Finish dashboard and account managed features (histories and timezone)
 #Add Chat history
-#Refactor client and server to allow for transmission of files, images, update encryption protocol to be more flexible and tolerant of delays.
+#Refactor client and server to allow for transmission of files.
         
 
 class Application():
@@ -43,6 +41,7 @@ class Application():
         self.username = None
         self.base_dir = os.path.dirname(os.path.abspath(__file__))
         self.save_task: asyncio.Task = None
+        self.tz = datetime.now().astimezone().tzinfo
     
     async def login(self, username, password):
         path = os.path.join(self.base_dir, f"{username}.act")
@@ -72,6 +71,11 @@ class Application():
             try:
                 self.public_key.verify(test_sig, b'test')
                 self.save_task = asyncio.create_task(self.periodic_save(5.0))
+                for chat in self.account.data.setdefault("chat_histories", {}).values():
+                    messages = chat.get("messages", {})
+                    chat["messages"] = {
+                        int(k): v for k, v in messages.items() if k.isdigit()
+                    }
                 return True, None
             except InvalidSignature:
                 return False, "keys_did_not_match"
@@ -79,10 +83,14 @@ class Application():
             return False, "incorrect_password"
     
     async def logout(self):
-        self.save_task.cancel()
+
         try:
-            await self.save_task
-        except asyncio.CancelledError:
+            self.save_task.cancel()
+            try:
+                await self.save_task
+            except asyncio.CancelledError:
+                pass
+        except:
             pass
         
         if self.account:
@@ -126,6 +134,8 @@ class Application():
     
     def add_contact(self, name, id):
         self.account.data["known_ids"][name] = id
+        self.account.data["chat_histories"].setdefault(id, {})["messages"] = {}
+        self.account.data["chat_histories"].setdefault(id, {})['name'] = name
         self.account.encrypt(self.user_data_key)
         return self.account.save(), "File Couldn't Save"   
     
@@ -282,6 +292,7 @@ class MainWindow(QMainWindow):
     def cleanup_server_session(self):
         try:
             if self.server_session:
+                asyncio.create_task(self.server_session.tunnel.close())
                 self.pages.removeWidget(self.server_session)
                 self.server_session.deleteLater()
         except:

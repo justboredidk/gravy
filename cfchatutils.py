@@ -157,5 +157,10 @@ def load_account(username):
     except:
         return False
 
+def get_key_by_value(dict: dict, search_value):
+    for key, value in dict.items():
+        if value == search_value:
+            return key
+
 if __name__ == "__main__":
     pass

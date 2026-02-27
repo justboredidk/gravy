@@ -46,14 +46,15 @@ class Tunnel():
                         self.url = ""
                         return None
                     url = url.group(1)
-                    self.url = url.replace('https', 'wss')
+                    self.url = url.replace('http', 'ws')
                     #print(self.url)
                     break
 
             return self.url
 
         elif tutype == Tunnel.disabled:
-            return "disabled"
+            self.url = f"ws://localhost:{port}"
+            return f"ws://localhost:{port}"
         
         elif tutype == Tunnel.ngrok:
             return "Nrgrok is not supported!"
