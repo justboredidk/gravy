@@ -26,9 +26,7 @@ import json
 from datetime import datetime
 
 #TO_DO
-#Finish dashboard and account managed features (histories and timezone)
-#Add Chat history
-#Refactor client and server to allow for transmission of files.
+#Update client and server to allow for transmission of files.
         
 
 class Application():
