@@ -26,6 +26,7 @@ pip install -r requirements.txt
 to install the packages used for this project.
 
 If you would like to create tunel with cloudflared visit [this](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/downloads/) url and put the .exe file under resources
+
 **If the program crashes while cloudflared is running, you will have to open task manager and manually exit**
 
 Then run the cfchatgui python file to start the program. Make an account and login. Upon login, you will be on the dashboard. This is where you manage the account.
