@@ -17,6 +17,7 @@ Additionally, messages are timestamp for a better UX.
 I hope to add transmitting files via the program at some point.
 
 **Usage**
+
 Disclaimer: So far, I have only used this on windows, so it might require adjustments, or it might just not work.
 
 To use this program, you will need to run:
@@ -25,7 +26,7 @@ pip install -r requirements.txt
 ```
 to install the packages used for this project.
 
-If you would like to create tunel with cloudflared visit [this](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/downloads/) url and put the .exe file under resources
+If you would like to create tunnel with cloudflared visit [this](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/downloads/) url and put the .exe file under resources
 
 **If the program crashes while cloudflared is running, you will have to open task manager and manually exit**
 
